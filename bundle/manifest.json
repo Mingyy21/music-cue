@@ -1,0 +1,12 @@
+{
+  "capabilities": [
+    "storage"
+  ],
+  "id": "music.cue",
+  "integrity": {
+    "bundle_blake3": "d213f814be72412f8c46f9d28c0f6928e8612626dad39e550897ad8b2d0721b3"
+  },
+  "name": "情境音乐任务卡",
+  "schema": 1,
+  "version": "0.2.0"
+}

@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "subtitle": "说一句现在想做什么，自动生成三段播放任务卡",
+  "description": "music.cue 把一句关于当下情境的话变成一张播放任务卡。输入「晚上想专注」，它会读出场景、时间与环境，然后安排一段 90 分钟的会话——渐入、稳定、收尾三段，每段都写清楚为什么这么排，所以这张卡是可以解释的，而不是黑箱。播放中跳过或收藏的曲目会沉淀为本地偏好，下次自动优先出现；听到一半退出也可以续播。本版本完全在本地运行，不联网、不上传任何数据。曲库为示例数据，不接入任何版权曲库，进度条为本地模拟。",
+  "category": "productivity",
+  "keywords": [
+    "music",
+    "focus",
+    "commute",
+    "task card",
+    "on-device",
+    "local-first"
+  ],
+  "screenshots": [
+    "screenshots/01-main.png",
+    "screenshots/02-confirm.png",
+    "screenshots/03-mine.png"
+  ],
+  "icon": "assets/icon.svg",
+  "platforms": [
+    "android"
+  ],
+  "publisher": {
+    "name": "REPLACE_WITH_PUBLISHER_NAME",
+    "support": "https://example.com/support",
+    "privacy_policy_url": "https://example.com/privacy"
+  },
+  "release_notes": "0.2.0 — 中文界面；真实歌名的示例曲库并附免责说明；偏好结构升级为带时间戳，「我的音乐」页可看到收藏的曲目与收藏时间。",
+  "age_rating": "all",
+  "license": "Apache-2.0"
+}

@@ -1,0 +1,2081 @@
+// 情境音乐任务卡 · 重做版
+// 架构依据：ARCHITECTURE.md
+//
+// 阶段 2：状态机 + 9 页面互斥容器
+//
+// ⚠️ 本阶段的核心难点：ScrollYView 的 on_render 是**增量更新**，
+// 条件转假时不会删除上一帧的节点（实测会造成内容永久残留）。
+//
+// 对策：**固定槽位法** —— 9 个页面各占一个「始终存在」的容器槽位，
+// 槽位内再用条件判断决定是否填内容。这样 on_render 每次输出的
+// 顶层节点数量恒定，渲染器不会因为节点增减而错位复用。
+//
+// 反面做法（会残留，禁止）：
+//   在同一层连续写 9 个 `if page == "X" { ... }` —— 节点数随页面变化。
+
+// ───────────────────────── 色板 ─────────────────────────
+
+let cAmb0 = #x15100E
+let cAmb1 = #x17120F
+let cAmb2 = #x191411
+let cAmb3 = #x1B1613
+let cAmb4 = #x1D1814
+let cAmb5 = #x1F1A15
+let cAmb6 = #x211B16
+let cAmb7 = #x231C16
+
+let cPaper     = #xEDE4D3
+let cPaperLine = #xD9CCB5
+let cCard      = #xF7F1E6
+let cCardLine  = #xD6C9B2
+let cInset     = #xE9DFCC
+let cFocus     = #x33291F
+
+let cAmber     = #xC4762E
+let cAmberDeep = #x9C5A20
+let cAmberSoft = #xE8A25E
+
+let cInk  = #x3A3028
+let cInk2 = #x8A7C69
+let cInk3 = #xA99A83
+
+let cAmbInk  = #xEDE5D8
+let cAmbInk2 = #x8F8375
+
+let cLine = #xDCD1BB
+
+// ───────────────────────── 尺寸常量 ─────────────────────────
+
+let COL_W = 420
+let PAD   = 24
+
+// ───────────────────────── 页面定义 ─────────────────────────
+
+//: 9 个页面。顺序即状态机顺序，槽位与之一一对应。
+let P_ONBOARD = "ONBOARD"
+let P_IDLE    = "IDLE"
+let P_CLARIFY = "CLARIFY"
+let P_CONFIRM = "CONFIRM"
+let P_PLAY    = "PLAY"
+let P_END     = "END"
+let P_STACK   = "STACK"
+let P_LIBRARY = "LIBRARY"
+let P_STATS   = "STATS"
+//: 开发探针页：把后端函数结果渲染出来供测试断言（阶段 9 与开发导航一并移除）
+let P_DEV     = "DEV"
+
+let page = P_IDLE
+
+// ───────────────────────── 曲库（编译期常量）─────────────────────────
+//
+// 真实歌名仅用于演示任务卡结构；本应用不播放音频、不接入任何曲库。
+// 改曲库只改 title，ref / style / scene 不要动（打分与黑名单依赖 ref）。
+
+let DEMO = [
+    // focus 专注
+    {ref: "f-r1" title: "起风了"       style: "rise"   scene: "focus"}
+    {ref: "f-r2" title: "光年之外"     style: "rise"   scene: "focus"}
+    {ref: "f-r3" title: "稻香"         style: "rise"   scene: "focus"}
+    {ref: "f-s1" title: "平凡之路"     style: "steady" scene: "focus"}
+    {ref: "f-s2" title: "晴日共剪窗"   style: "steady" scene: "focus"}
+    {ref: "f-s3" title: "孤勇者"       style: "steady" scene: "focus"}
+    {ref: "f-o1" title: "送别"         style: "fall"   scene: "focus"}
+    {ref: "f-o2" title: "安静下来"     style: "fall"   scene: "focus"}
+    {ref: "f-o3" title: "晚安"         style: "fall"   scene: "focus"}
+    // commute 通勤
+    {ref: "c-r1" title: "少年"         style: "rise"   scene: "commute"}
+    {ref: "c-r2" title: "知否知否"     style: "rise"   scene: "commute"}
+    {ref: "c-r3" title: "兰亭序"       style: "rise"   scene: "commute"}
+    {ref: "c-s1" title: "晴天"         style: "steady" scene: "commute"}
+    {ref: "c-s2" title: "彩虹"         style: "steady" scene: "commute"}
+    {ref: "c-s3" title: "一路向北"     style: "steady" scene: "commute"}
+    {ref: "c-o1" title: "回家"         style: "fall"   scene: "commute"}
+    {ref: "c-o2" title: "慢一拍的松弛" style: "fall"   scene: "commute"}
+    {ref: "c-o3" title: "夜航"         style: "fall"   scene: "commute"}
+    // rest 休息
+    {ref: "r-r1" title: "小情歌"       style: "rise"   scene: "rest"}
+    {ref: "r-r2" title: "春风吹"       style: "rise"   scene: "rest"}
+    {ref: "r-r3" title: "完美的一天"   style: "rise"   scene: "rest"}
+    {ref: "r-s1" title: "夏夜晚风"     style: "steady" scene: "rest"}
+    {ref: "r-s2" title: "慢慢喜欢你"   style: "steady" scene: "rest"}
+    {ref: "r-s3" title: "温柔"         style: "steady" scene: "rest"}
+    {ref: "r-o1" title: "橄榄树"       style: "fall"   scene: "rest"}
+    {ref: "r-o2" title: "城南旧事"     style: "fall"   scene: "rest"}
+    {ref: "r-o3" title: "微风"         style: "fall"   scene: "rest"}
+    // sleep 睡前
+    {ref: "z-r1" title: "小星星"       style: "rise"   scene: "sleep"}
+    {ref: "z-r2" title: "月光"         style: "rise"   scene: "sleep"}
+    {ref: "z-r3" title: "虫儿飞"       style: "rise"   scene: "sleep"}
+    {ref: "z-s1" title: "夜的钢琴曲"   style: "steady" scene: "sleep"}
+    {ref: "z-s2" title: "白噪音"       style: "steady" scene: "sleep"}
+    {ref: "z-s3" title: "雨声"         style: "steady" scene: "sleep"}
+    {ref: "z-o1" title: "睡吧"         style: "fall"   scene: "sleep"}
+    {ref: "z-o2" title: "安睡"         style: "fall"   scene: "sleep"}
+    {ref: "z-o3" title: "月亮晚安"     style: "fall"   scene: "sleep"}
+    // gym 健身
+    {ref: "g-r1" title: "燃"           style: "rise"   scene: "gym"}
+    {ref: "g-r2" title: "卡路里"       style: "rise"   scene: "gym"}
+    {ref: "g-r3" title: "逆战"         style: "rise"   scene: "gym"}
+    {ref: "g-s1" title: "野狼disco"    style: "steady" scene: "gym"}
+    {ref: "g-s2" title: "我的天空"     style: "steady" scene: "gym"}
+    {ref: "g-s3" title: "追梦赤子心"   style: "steady" scene: "gym"}
+    {ref: "g-o1" title: "慢慢"         style: "fall"   scene: "gym"}
+    {ref: "g-o2" title: "舒缓"         style: "fall"   scene: "gym"}
+    {ref: "g-o3" title: "放松"         style: "fall"   scene: "gym"}
+]
+
+// ───────────────────────── 场景与规则表 ─────────────────────────
+
+let SCENES = [
+    {key: "focus"   label: "专注"}
+    {key: "commute" label: "通勤"}
+    {key: "rest"    label: "休息"}
+    {key: "sleep"   label: "睡前"}
+    {key: "gym"     label: "健身"}
+]
+
+//: 场景 × 时间桶 → 配乐风格 / 默认时长 / 理由（中文，会显示在卡上）
+let RULES = [
+    {scene: "focus"   bucket: "morning"   mood: "calm"      min: 90 reason: "早上专注：先缓缓进入，再稳住"}
+    {scene: "focus"   bucket: "afternoon" mood: "calm"      min: 90 reason: "下午专注：安静平稳，不打扰思路"}
+    {scene: "focus"   bucket: "night"     mood: "calm"      min: 90 reason: "夜里专注：压低音量，保持安静"}
+    {scene: "commute" bucket: "morning"   mood: "energetic" min: 30 reason: "早上通勤：提提精神，开始新一天"}
+    {scene: "commute" bucket: "afternoon" mood: "neutral"   min: 30 reason: "下午通勤：平缓均匀，平稳过渡"}
+    {scene: "commute" bucket: "night"     mood: "calm"      min: 30 reason: "晚上通勤：慢慢放松下来"}
+    {scene: "rest"    bucket: "morning"   mood: "neutral"   min: 20 reason: "早上休息：轻一点，别太兴奋"}
+    {scene: "rest"    bucket: "afternoon" mood: "neutral"   min: 20 reason: "下午休息：缓一缓，喘口气"}
+    {scene: "rest"    bucket: "night"     mood: "calm"      min: 20 reason: "晚上休息：安静下来"}
+    {scene: "sleep"   bucket: "morning"   mood: "calm"      min: 40 reason: "睡前安排：音量压低，慢慢入睡"}
+    {scene: "sleep"   bucket: "afternoon" mood: "calm"      min: 40 reason: "睡前安排：安静平稳，准备入睡"}
+    {scene: "sleep"   bucket: "night"     mood: "calm"      min: 40 reason: "睡前安排：一路降到睡着"}
+    {scene: "gym"     bucket: "morning"   mood: "energetic" min: 45 reason: "早上健身：先热起来，再上强度"}
+    {scene: "gym"     bucket: "afternoon" mood: "energetic" min: 45 reason: "下午健身：节奏带起来"}
+    {scene: "gym"     bucket: "night"     mood: "energetic" min: 45 reason: "晚上健身：保持推进感"}
+]
+
+// ───────────────────────── 后端：感知 ─────────────────────────
+
+fn sceneLabelOf(key){
+    for s in SCENES { if s.key == key { return s.label } }
+    return "专注"
+}
+
+fn hourNow(){
+    let lt = local_time()
+    return lt.hour
+}
+
+fn bucketOfHour(h){
+    if h >= 5 && h < 12 { return "morning" }
+    if h >= 12 && h < 18 { return "afternoon" }
+    return "night"
+}
+
+//: 场景词表。中英双语 —— 纯英文表在中文输入下会全部落空（旧版实测缺陷）。
+//:
+//: 顺序讲究：更具体的词排在前。sleep / gym 必须在 rest 之前，
+//: 否则「睡前放松」会被「放松」抢先判成 rest（实测踩过）。
+//: 最终顺序：focus → commute → sleep → gym → rest。
+fn matchScene(t){
+    // 专注
+    if t.search("专注") >= 0 { return "focus" }
+    if t.search("工作") >= 0 { return "focus" }
+    if t.search("学习") >= 0 { return "focus" }
+    if t.search("看书") >= 0 { return "focus" }
+    if t.search("写") >= 0 { return "focus" }
+    if t.search("focus") >= 0 { return "focus" }
+    if t.search("work") >= 0 { return "focus" }
+    if t.search("study") >= 0 { return "focus" }
+    // 通勤
+    if t.search("通勤") >= 0 { return "commute" }
+    if t.search("上班") >= 0 { return "commute" }
+    if t.search("路上") >= 0 { return "commute" }
+    if t.search("地铁") >= 0 { return "commute" }
+    if t.search("公交") >= 0 { return "commute" }
+    if t.search("开车") >= 0 { return "commute" }
+    if t.search("坐车") >= 0 { return "commute" }
+    if t.search("commute") >= 0 { return "commute" }
+    // 睡前（必须早于 rest）
+    if t.search("睡前") >= 0 { return "sleep" }
+    if t.search("入睡") >= 0 { return "sleep" }
+    if t.search("睡觉") >= 0 { return "sleep" }
+    if t.search("失眠") >= 0 { return "sleep" }
+    if t.search("哄睡") >= 0 { return "sleep" }
+    if t.search("sleep") >= 0 { return "sleep" }
+    // 健身（必须早于 rest）
+    if t.search("健身") >= 0 { return "gym" }
+    if t.search("跑步") >= 0 { return "gym" }
+    if t.search("运动") >= 0 { return "gym" }
+    if t.search("撸铁") >= 0 { return "gym" }
+    if t.search("gym") >= 0 { return "gym" }
+    // 休息（最泛，放最后）
+    if t.search("休息") >= 0 { return "rest" }
+    if t.search("放松") >= 0 { return "rest" }
+    if t.search("歇") >= 0 { return "rest" }
+    if t.search("relax") >= 0 { return "rest" }
+    return ""
+}
+
+//: 从原话提取时间桶。用户说「早上通勤」时，语义时间应压过系统当前时间 ——
+//: 否则夜里测试「早上通勤」会拿到 night 桶，配乐风格全错（实测缺陷）。
+//: 返回 "" 表示原话未指定时间，此时才回落到系统小时。
+fn matchTimeBucket(t){
+    if t.search("早上") >= 0 { return "morning" }
+    if t.search("清晨") >= 0 { return "morning" }
+    if t.search("早晨") >= 0 { return "morning" }
+    if t.search("上午") >= 0 { return "morning" }
+    if t.search("morning") >= 0 { return "morning" }
+    if t.search("下午") >= 0 { return "afternoon" }
+    if t.search("中午") >= 0 { return "afternoon" }
+    if t.search("午后") >= 0 { return "afternoon" }
+    if t.search("afternoon") >= 0 { return "afternoon" }
+    if t.search("晚上") >= 0 { return "night" }
+    if t.search("今晚") >= 0 { return "night" }
+    if t.search("夜里") >= 0 { return "night" }
+    if t.search("深夜") >= 0 { return "night" }
+    if t.search("night") >= 0 { return "night" }
+    return ""
+}
+
+fn matchEnv(t){
+    if t.search("雨") >= 0 { return "rainy" }
+    if t.search("晴") >= 0 { return "sunny" }
+    if t.search("阴") >= 0 { return "cloudy" }
+    return "indoor"
+}
+
+//: 提取显式时长。正则取第一个数字，要求 >= 5（避免把「第 3 首」当分钟数）。
+fn matchDuration(t){
+    let m = t.match_str(regex("[0-9]+"))
+    if m == nil { return 0 }
+    let v = m.value
+    if v == nil { return 0 }
+    let f = v.to_f64()
+    if f == nil { return 0 }
+    if f >= 5 { return floor(f) }
+    return 0
+}
+
+//: 原话 → 情境包。missing 只允许 ["scene"]，其余维度取默认值，不追问。
+fn perceive(text, ts, history){
+    let t = text.trim()
+    let out = {
+        raw: t
+        time:  {bucket: bucketOfHour(hourNow()) raw: ""}
+        scene: {key: "" label: "专注" confidence: 0.4}
+        env:   {key: "indoor" raw: "indoor"}
+        mood:  {key: "neutral" raw: "neutral"}
+        durationHint: 0
+        missing: []
+    }
+    let sc = matchScene(t)
+    if sc != "" { out.scene.key = sc }
+    out.scene.label = sceneLabelOf(out.scene.key)
+    out.env.key = matchEnv(t)
+    let d = matchDuration(t)
+    if d > 0 { out.durationHint = d }
+
+    // 时间桶：原话显式指定优先，否则用系统小时
+    let tb = matchTimeBucket(t)
+    if tb != "" { out.time.bucket = tb  out.time.raw = t }
+
+    // 置信度：基线 0.4 + 场景命中 0.4 + 时长显式 0.1 + 时间显式 0.05 + 历史同场景 0.05
+    let c = 0.4
+    if sc != "" { c = c + 0.4 }
+    if d > 0 { c = c + 0.1 }
+    if tb != "" { c = c + 0.05 }
+    if history != nil {
+        for item in history {
+            if item.scene == out.scene.key { c = c + 0.05 }
+        }
+    }
+    if c > 1.0 { c = 1.0 }
+    out.scene.confidence = c
+
+    if sc == "" { out.missing = ["scene"] }
+    return out
+}
+
+// ───────────────────────── 后端：决策 ─────────────────────────
+
+fn ruleFor(scene, bucket){
+    let hit = nil
+    for r in RULES {
+        if r.scene == scene && r.bucket == bucket { hit = r }
+    }
+    if hit == nil {
+        for r in RULES {
+            if r.scene == scene { hit = r }
+        }
+    }
+    if hit == nil {
+        hit = {scene: scene bucket: bucket mood: "calm" min: 90
+               reason: "没有完全匹配的规则，先按安静的专注安排"}
+    }
+    return hit
+}
+
+fn defaultPomodoro(scene){
+    if scene == "focus" { return 25 }
+    return 0
+}
+
+//: 情境包 → 意图标签。USE_AI 恒为 false，全部走本地规则表。
+fn decide(p){
+    let r = ruleFor(p.scene.key, p.time.bucket)
+    let dur = r.min
+    if p.durationHint > 0 { dur = p.durationHint }
+    return {
+        scene: p.scene.key
+        sceneLabel: p.scene.label
+        mood: r.mood
+        durationMin: dur
+        pomodoroMin: defaultPomodoro(p.scene.key)
+        confidence: p.scene.confidence
+        reason: r.reason
+        source: "local_rule"
+    }
+}
+
+// ───────────────────────── 后端：编排 ─────────────────────────
+
+//: 选曲。打分 = 同风格 +1.0 ＋ 收藏 ×1.0 − 跳过 ×1.5；
+//: 跳过累计 ≥ BLACKLIST_AFTER 的曲目直接排除；本卡已用过的排除。
+//:
+//: 同分轮转用「时间戳 + 轮换种子」，只用时间戳会因取模巧合导致
+//: 「换一批」拿回同一组曲目（实测踩过）。
+fn pickTrack(mood, scene, used){
+    let pool = []
+    for t in DEMO {
+        if t.scene != scene { continue }
+        let skipN = 0
+        if prefs != nil { skipN = countIn(prefs.tags.skippedTracks, t.ref) }
+        if skipN >= BLACKLIST_AFTER { continue }
+        let dup = false
+        for u in used { if u == t.ref { dup = true } }
+        if dup { continue }
+        let score = 0.0
+        if t.style == mood { score = score + 1.0 }
+        if prefs != nil {
+            score = score + 1.0 * countIn(prefs.tags.favTracks, t.ref)
+            score = score - 1.5 * skipN
+        }
+        pool.push({ref: t.ref score: score})
+    }
+    if pool.len() == 0 { return nil }
+    let best = pool[0]
+    for p in pool { if p.score > best.score { best = p } }
+    let top = []
+    for p in pool { if p.score == best.score { top.push(p.ref) } }
+    let i = (floor(time_now()) + pickSeed) % top.len()
+    return {ref: top[i]}
+}
+
+fn buildSegments(total, scene){
+    let intro = clamp(round(total * 0.11), 3, 10)
+    let outro = intro
+    let stable = total - intro - outro
+    let out = []
+    out.push({phase: "intro"  min: intro  mood: "rise"   src: "none" reason: "慢慢进入状态"})
+    out.push({phase: "stable" min: stable mood: "steady" src: "none" reason: "保持在心流里"})
+    out.push({phase: "outro"  min: outro  mood: "fall"   src: "none" reason: "平滑降下来"})
+    let used = []
+    for seg in out {
+        let t = pickTrack(seg.mood, scene, used)
+        if t != nil { seg.src = t.ref  used.push(t.ref) }
+    }
+    return out
+}
+
+fn orchestrate(it){
+    let segs = buildSegments(it.durationMin, it.scene)
+    return {
+        id: "c" + ("" + floor(time_now()))
+        scene: it.scene
+        sceneLabel: it.sceneLabel
+        totalMin: it.durationMin
+        pomodoroMin: it.pomodoroMin
+        segments: segs
+        elapsedSec: 0
+        // 理由随卡走：确认页要显示「为什么这么排」。
+        // 读不存在的键会抛不可捕获异常（实测整个 on_render 闭包会因此作废），
+        // 所以卡上出现的每个字段都必须在构造时给齐。
+        reason: it.reason
+        mood: it.mood
+        status: "confirmed"
+        createdAt: floor(time_now())
+    }
+}
+
+fn trackTitle(ref){
+    if ref == nil || ref == "" || ref == "none" { return "未知曲目" }
+    for t in DEMO { if t.ref == ref { return t.title } }
+    return "已失效的记录"
+}
+
+fn sceneLabelOfKey(k){
+    return sceneLabelOf(k)
+}
+
+// ───────────────────────── 开发探针 ─────────────────────────
+
+let pbRaw      = "-"
+let pbScene    = "-"
+let pbBucket   = "-"
+let pbEnv      = "-"
+let pbDur      = "-"
+let pbMood     = "-"
+let pbReason   = "-"
+let pbMissing  = "-"
+let pbSegs     = "-"
+let pbTracks   = "-"
+
+fn runProbe(){
+    let txt = ui.probeEntry.text()
+    if txt == nil { txt = "" }
+    let pkg = perceive(txt, time_now(), [])
+    let it = decide(pkg)
+    let card = orchestrate(it)
+    pbRaw = txt
+    pbScene = pkg.scene.key
+    if pbScene == "" { pbScene = "(空)" }
+    pbBucket = pkg.time.bucket
+    pbEnv = pkg.env.key
+    pbDur = "" + it.durationMin
+    pbMood = it.mood
+    pbReason = it.reason
+    pbMissing = "" + pkg.missing.len()
+    let s = ""
+    for seg in card.segments {
+        s = s + seg.phase + "=" + ("" + seg.min) + " "
+    }
+    pbSegs = s
+    let tr = ""
+    for seg in card.segments {
+        tr = tr + trackTitle(seg.src) + " / "
+    }
+    pbTracks = tr
+    ui.screen.render()
+}
+
+// ───────────────────────── 状态机 ─────────────────────────
+
+fn go(p){
+    page = p
+    playTransition()
+    ui.screen.render()
+}
+
+fn boot(){
+    fs.mkdir("accounts/device")
+    prefs = loadPref()
+    if !isJsonObject(prefs) { prefs = defaultPref() }
+    // 迁移/裁剪改变了内容就落盘，避免磁盘上长期留着旧结构
+    savePref()
+    stack = loadStack()
+    if !isJsonObject(stack) { stack = {version: 1 cards: []} }
+    // 恢复上次选择的风格
+    if hasKey(prefs, "style") && prefs.style != nil {
+        applyStyle(prefs.style)
+    }
+    // 首帧必须显式绘制：只做初始化不 render 会导致整屏空白（实测）
+    ui.screen.render()
+}
+
+start_timeout(0.05, || boot())
+
+// ───────────────────────── 主链路状态与转场 ─────────────────────────
+
+let pkg         = nil
+let intent      = nil
+let card        = nil
+let clarifyUsed = 0
+let statusText  = ""
+let timerId     = nil
+//: 当前已收藏的曲目 ref（用于点亮角标）。收藏不换曲，所以这是个独立标记。
+let favMark     = ""
+//: 选曲轮换种子。每次「换一批」自增，保证同分曲目轮换（只用时间戳会撞车）。
+let pickSeed    = 0
+//: 内联选择器："" | "duration" | "pomodoro"
+//: 用内联行而不是弹层 —— 弹层在增量渲染下容易留下残影（见架构文档）。
+let picker      = ""
+
+fn segLabel(phase){
+    if phase == "intro" { return "渐入" }
+    if phase == "stable" { return "稳定" }
+    return "收尾"
+}
+
+fn pageTitle(){
+    if page == P_CLARIFY { return "需要确认一下" }
+    if page == P_CONFIRM { return "任务卡" }
+    if page == P_PLAY    { return "播放中" }
+    if page == P_END     { return "已完成" }
+    if page == P_STACK   { return "卡堆" }
+    if page == P_LIBRARY { return "我的音乐" }
+    if page == P_STATS   { return "统计" }
+    if page == P_ONBOARD { return "欢迎" }
+    if page == P_DEV     { return "开发探针" }
+    return "情境音乐任务卡"
+}
+
+fn mmss(sec){
+    let m = floor(sec / 60)
+    let s = sec - m * 60
+    if s < 10 { return ("" + m) + ":0" + ("" + s) }
+    return ("" + m) + ":" + ("" + s)
+}
+
+fn pct(){
+    if card == nil { return 0.0 }
+    let total = card.totalMin * 60
+    if total <= 0 { return 0.0 }
+    return clamp(card.elapsedSec / total, 0.0, 1.0)
+}
+
+fn currentSeg(){
+    if card == nil { return nil }
+    let acc = 0
+    for seg in card.segments {
+        acc = acc + seg.min * 60
+        if card.elapsedSec < acc { return seg }
+    }
+    return card.segments[card.segments.len() - 1]
+}
+
+fn stopTimerIfAny(){
+    if timerId != nil { stop_timer(timerId)  timerId = nil }
+}
+
+// 情境包 → 意图 → 任务卡，进入确认页
+fn buildCard(){
+    pickSeed = pickSeed + 1
+    intent = decide(pkg)
+    applySceneAmbience(intent.scene)
+    card = orchestrate(intent)
+    statusText = ""
+    go(P_CONFIRM)
+}
+
+fn submitInput(){
+    let raw = ui.mainEntry.text()
+    let t = ""
+    if raw != nil { t = raw.trim() }
+    if t == "" {
+        statusText = "没听清，换个说法？"
+        ui.screen.render()
+        return
+    }
+    pkg = perceive(t, time_now(), [])
+    // 追问只做一轮：本轮已问过就直接按兜底场景出卡
+    if pkg.missing.len() > 0 && clarifyUsed < 1 {
+        clarifyUsed = clarifyUsed + 1
+        statusText = ""
+        go(P_CLARIFY)
+        return
+    }
+    if pkg.scene.key == "" {
+        pkg.scene.key = "focus"
+        pkg.scene.label = "专注"
+    }
+    buildCard()
+}
+
+// 输入页的快捷场景：跳过感知，直接按点选的场景出卡
+fn quickScene(k){
+    clarifyUsed = 0
+    pkg = perceive("", time_now(), [])
+    pkg.scene.key = k
+    pkg.scene.label = sceneLabelOf(k)
+    pkg.missing = []
+    buildCard()
+}
+
+fn chooseScene(k){
+    pkg.scene.key = k
+    pkg.scene.label = sceneLabelOf(k)
+    pkg.missing = []
+    buildCard()
+}
+
+fn skipClarify(){
+    chooseScene("focus")
+}
+
+fn startPlay(){
+    if card == nil { return }
+    card.status = "playing"
+    card.startedAt = time_now()
+    card.elapsedSec = 0
+    favMark = ""
+    statusText = ""
+    go(P_PLAY)
+    stopTimerIfAny()
+    timerId = start_interval(5.0, || tickPlay())
+    savePending()
+}
+
+//: 每 5 秒推进一次。间隔是预算与手感的折中：更密会逼近指令上限（见架构文档 R1）
+fn tickPlay(){
+    if card == nil { return }
+    card.elapsedSec = floor(time_now() - card.startedAt)
+    if card.elapsedSec >= card.totalMin * 60 {
+        card.elapsedSec = card.totalMin * 60
+        stopTimerIfAny()
+        toPlayEnd()
+        return
+    }
+    savePending()
+    ui.screen.render()
+}
+
+fn toPlayEnd(){
+    if card != nil {
+        prefs.history.push({ts: floor(time_now()) scene: card.scene
+                            durationMin: card.totalMin cardId: card.id})
+        trimTo(prefs.history, CAP_HIST)
+        savePref()
+    }
+    if fs.exists(PENDING) { fs.remove(PENDING) }
+    favMark = ""
+    statusText = ""
+    go(P_END)
+}
+
+fn quitPlay(){
+    stopTimerIfAny()
+    if card != nil { savePending() }
+    card = nil
+    favMark = ""
+    statusText = "已暂停，随时可以继续"
+    go(P_IDLE)
+}
+
+fn cancelCard(){
+    stopTimerIfAny()
+    card = nil
+    intent = nil
+    favMark = ""
+    statusText = "已取消，重新说一句试试"
+    go(P_IDLE)
+}
+
+// ───────────────────────── 番茄钟 ─────────────────────────
+//
+// 规则（已确认）：时长可配 25/45/60；按它切分稳定段；尾段不足一轮单独成项；
+// 每 4 轮进入长休；**仅专注场景启用**（其他场景 pomodoroMin = 0，播放页不显示）。
+// 番茄轮次不进统计、不落盘 —— 只在播放会话的内存里推导。
+
+let POMO_CHOICES = [25 45 60]
+
+//: 把稳定段切成一串番茄轮次。pMin <= 0 时整段作为一轮（等于不切）。
+fn splitStable(stableMin, pMin){
+    let rounds = []
+    if pMin <= 0 {
+        rounds.push(stableMin)
+        return rounds
+    }
+    let left = stableMin
+    while left > 0 {
+        if left >= pMin {
+            rounds.push(pMin)
+            left = left - pMin
+        } else {
+            rounds.push(left)
+            left = 0
+        }
+    }
+    return rounds
+}
+
+//: 已进入稳定段的秒数（小于 0 表示还没到稳定段）
+fn stableElapsedSec(){
+    if card == nil { return -1 }
+    let introSec = card.segments[0].min * 60
+    return card.elapsedSec - introSec
+}
+
+//: 当前番茄状态。返回 {active, round, total, remainSec, isLongBreak, due}
+//:
+//: 进入稳定段前（渐入段途中）也返回第 1 轮 —— 番茄条应当从播放一开始就可见，
+//: 否则界面上会出现无意义的「第 0/0 轮」（实测）。
+fn pomoState(){
+    let st = {active: false round: 0 total: 0 remainSec: 0 isLongBreak: false
+              due: false}
+    if card == nil { return st }
+    if card.scene != "focus" { return st }
+    if card.pomodoroMin <= 0 { return st }
+    let el = stableElapsedSec()
+    if el < 0 { el = 0 }
+    let rounds = splitStable(card.segments[1].min, card.pomodoroMin)
+    st.active = true
+    st.total = rounds.len()
+    let acc = 0
+    let idx = 0
+    for r in rounds {
+        let rsec = r * 60
+        if el < acc + rsec { idx = idx  break }
+        idx = idx + 1
+        acc = acc + rsec
+    }
+    if idx >= rounds.len() {
+        idx = rounds.len() - 1
+        acc = 0
+        let q = 0
+        while q < idx { acc = acc + rounds[q] * 60  q = q + 1 }
+    }
+    st.round = idx + 1
+    st.remainSec = acc + rounds[idx] * 60 - el
+    // 每 4 轮完成进入长休（第 4、8… 轮结束时提示）
+    st.isLongBreak = st.round % 4 == 0
+    return st
+}
+
+fn pomoOptions(){
+    //: 供设置行渲染的三档
+    return POMO_CHOICES
+}
+
+fn setPomodoro(v){
+    if card == nil { return }
+    card.pomodoroMin = v
+    picker = ""
+    statusText = "番茄钟已设为 " + ("" + v) + " 分钟"
+    ui.screen.render()
+}
+
+fn setDuration(v){
+    if card == nil { return }
+    card.totalMin = v
+    card.segments = buildSegments(v, card.scene)
+    picker = ""
+    statusText = "时长已改为 " + ("" + v) + " 分钟"
+    ui.screen.render()
+}
+
+//: 换一批：三段曲目全部重抽（保留段落结构与时长）
+fn refreshTracks(){
+    if card == nil { return }
+    pickSeed = pickSeed + 1
+    let used = []
+    for seg in card.segments {
+        let t = pickTrack(seg.mood, card.scene, used)
+        if t != nil { seg.src = t.ref  used.push(t.ref) }
+    }
+    favMark = ""
+    statusText = "已换一批曲目"
+    ui.screen.render()
+}
+
+fn durationOptions(){
+    return [30 45 60 90 120]
+}
+
+fn openPicker(which){
+    picker = which
+    ui.screen.render()
+}
+
+
+
+// ───────────────────────── 持久化：偏好 v3 ─────────────────────────
+
+let PREF    = "accounts/device/preference.json"
+let PENDING = "accounts/device/pending.json"
+
+let CAP_FAV  = 200
+let CAP_SKIP = 200
+let CAP_HIST = 50
+let CAP_FB   = 50
+//: 跳过累计到此值即进黑名单（不再被选中）
+let BLACKLIST_AFTER = 2
+
+let prefs = nil
+
+//: 判定是否为 JSON 对象。
+//: Splash 没有 is_object()，且对字符串取字段会抛不可捕获异常
+//: （实测 "no getter for field ref on type string"）。
+//: to_json() 会全量序列化，因此**禁止在热点路径调用**（见架构文档 R1）。
+fn isJsonObject(v){
+    if v == nil { return false }
+    return v.to_json().search("{") == 0
+}
+
+//: 判定对象是否含某键。读不存在的键会抛不可捕获异常，必须先探。
+fn hasKey(o, key){
+    if !isJsonObject(o) { return false }
+    return o.to_json().search("\"" + key + "\"") >= 0
+}
+
+fn defaultPref(){
+    return {
+        version: 3
+        style: "dark"
+        sceneDefaults: {
+            focus:   {durationMin: 90 pomodoroMin: 25}
+            commute: {durationMin: 30 pomodoroMin: 0}
+            rest:    {durationMin: 20 pomodoroMin: 0}
+            sleep:   {durationMin: 40 pomodoroMin: 0}
+            gym:     {durationMin: 45 pomodoroMin: 0}
+        }
+        tags: {favTracks: [] skippedTracks: [] adjustLog: []}
+        history: []
+        feedback: []
+    }
+}
+
+//: v1（纯 ref 字符串数组）→ v3（{ref, ts} 对象数组）。无法识别的元素丢弃。
+//: 用 push 追加而非 insert(0) —— 后者是 O(n)，几百条会逼近指令上限。
+fn toV3List(arr){
+    let out = []
+    if arr == nil { return out }
+    for v in arr {
+        if v == nil { continue }
+        if isJsonObject(v) {
+            if !hasKey(v, "ref") { continue }
+            let r = v.ref
+            if r == nil || r == "" { continue }
+            let t = floor(time_now())
+            if hasKey(v, "ts") && v.ts != nil { t = v.ts }
+            out.push({ref: r ts: t})
+        } else {
+            if v != "" { out.push({ref: v ts: floor(time_now())}) }
+        }
+    }
+    return out
+}
+
+//: 裁剪到上限。不能用 while + remove(0)（O(n²)，实测会触发指令超限）。
+fn trimTo(arr, cap){
+    let n = arr.len()
+    if n <= cap { return }
+    let keep = []
+    let i = n - 1
+    let taken = 0
+    while i >= 0 && taken < cap {
+        keep.push(arr[i])
+        taken = taken + 1
+        i = i - 1
+    }
+    let out = []
+    let k = keep.len() - 1
+    while k >= 0 {
+        out.push(keep[k])
+        k = k - 1
+    }
+    arr.clear()
+    for v in out { arr.push(v) }
+}
+
+//: 读偏好。逐字段防御：坏 JSON / 缺字段 / 脏元素都要能静默回退。
+fn loadPref(){
+    if !fs.exists(PREF) { return defaultPref() }
+    let v = fs.read(PREF).parse_json()
+    if !isJsonObject(v) { return defaultPref() }
+    if !hasKey(v, "tags") || !isJsonObject(v.tags) {
+        v.tags = {favTracks: [] skippedTracks: [] adjustLog: []}
+    }
+    if !hasKey(v, "history") || v.history == nil { v.history = [] }
+    if !hasKey(v, "feedback") || v.feedback == nil { v.feedback = [] }
+    if !hasKey(v, "style") || v.style == nil { v.style = "dark" }
+    if !hasKey(v, "sceneDefaults") || !isJsonObject(v.sceneDefaults) {
+        v.sceneDefaults = defaultPref().sceneDefaults
+    }
+    if !hasKey(v.tags, "favTracks") || v.tags.favTracks == nil {
+        v.tags.favTracks = []
+    }
+    if !hasKey(v.tags, "skippedTracks") || v.tags.skippedTracks == nil {
+        v.tags.skippedTracks = []
+    }
+    if !hasKey(v.tags, "adjustLog") || v.tags.adjustLog == nil {
+        v.tags.adjustLog = []
+    }
+    v.tags.favTracks = toV3List(v.tags.favTracks)
+    v.tags.skippedTracks = toV3List(v.tags.skippedTracks)
+    trimTo(v.tags.favTracks, CAP_FAV)
+    trimTo(v.tags.skippedTracks, CAP_SKIP)
+    trimTo(v.history, CAP_HIST)
+    trimTo(v.feedback, CAP_FB)
+    v.version = 3
+    return v
+}
+
+fn savePref(){
+    if prefs == nil { return }
+    fs.write(PREF, prefs.to_json())
+}
+
+//: 统计某 ref 在偏好数组里出现几次。
+//: 迁移后元素保证是 {ref, ts} 对象，可直接读字段（不调 to_json，热点路径）。
+fn countIn(arr, ref){
+    let n = 0
+    if arr == nil { return 0 }
+    for v in arr {
+        if v == nil { continue }
+        if v.ref != nil {
+            if v.ref == ref { n = n + 1 }
+        }
+    }
+    return n
+}
+
+fn favCount(){
+    if prefs == nil { return 0 }
+    return prefs.tags.favTracks.len()
+}
+
+fn logPref(what, ref){
+    if prefs == nil { return }
+    prefs.tags.adjustLog.push({ts: floor(time_now()) what: what ref: ref})
+    trimTo(prefs.tags.adjustLog, CAP_HIST)
+}
+
+// ───────────────────────── 偏好回流 ─────────────────────────
+
+//: 收藏：只记录偏好并点亮角标，**不换曲**。
+//: 旧版把收藏和跳过做成同一行为（都换歌），从用户视角是错的：
+//: 收藏 = 我喜欢这首 = 继续听；跳过 = 换下一首。
+fn onFav(){
+    if card == nil { return }
+    let seg = currentSeg()
+    if seg == nil { return }
+    if seg.src == "none" { return }
+    let r = seg.src
+    prefs.tags.favTracks.push({ref: r ts: floor(time_now())})
+    trimTo(prefs.tags.favTracks, CAP_FAV)
+    logPref("fav", r)
+    savePref()
+    favMark = r
+    statusText = "已收藏 · 当前曲目继续播放"
+    ui.screen.render()
+}
+
+//: 跳过：记录降权并**立即换同风格下一首**。
+fn onSkip(){
+    if card == nil { return }
+    let seg = currentSeg()
+    if seg == nil { return }
+    if seg.src == "none" { return }
+    let r = seg.src
+    prefs.tags.skippedTracks.push({ref: r ts: floor(time_now())})
+    trimTo(prefs.tags.skippedTracks, CAP_SKIP)
+    logPref("skip", r)
+    savePref()
+    let used = []
+    for x in card.segments { used.push(x.src) }
+    let nxt = pickTrack(seg.mood, card.scene, used)
+    if nxt != nil { seg.src = nxt.ref }
+    favMark = ""
+    statusText = "已跳过 · 换了一首"
+    ui.screen.render()
+}
+
+// ───────────────────────── 续播 ─────────────────────────
+
+fn savePending(){
+    if card == nil { return }
+    fs.write(PENDING, card.to_json())
+}
+
+fn resumePending(){
+    if !fs.exists(PENDING) { return }
+    let v = fs.read(PENDING).parse_json()
+    if !isJsonObject(v) { return }
+    card = v
+    card.startedAt = time_now() - card.elapsedSec
+    card.status = "playing"
+    statusText = ""
+    go(P_PLAY)
+    stopTimerIfAny()
+    timerId = start_interval(5.0, || tickPlay())
+}
+
+fn dropPending(){
+    if fs.exists(PENDING) { fs.remove(PENDING) }
+    statusText = "已清除上次的记录"
+    ui.screen.render()
+}
+
+//: 是否存在可续播的快照。
+//: 不只看文件存在 —— 空文件或损坏 JSON 都应视为没有续播，
+//: 否则会出现「点了续播却什么都没发生」的假入口。
+fn hasPending(){
+    if !fs.exists(PENDING) { return false }
+    let v = fs.read(PENDING).parse_json()
+    if !isJsonObject(v) { return false }
+    // 必须有真实卡片才认：空文件/空对象会被 parse_json 解析成 {}，
+    // 单看 isJsonObject 会把「空快照」当成可续播，出现假入口（实测）。
+    return hasKey(v, "id")
+}
+
+
+
+// ───────────────────────── 风格与场景氛围 ─────────────────────────
+//
+// 三套主题只切换**表面色板**（氛围底 / 纸面 / 卡面 / 卡内小卡 / 文字），
+// 主色琥珀保持不变 —— 它是品牌色，且按钮模板在声明时就捕获了色值，
+// 运行时改主色不会回流到模板（实测），只切表面是可靠且视觉差异明显的最小方案。
+
+let styleName = "dark"
+let sceneAmb  = ""
+
+// ── 转场动画与开发开关 ──
+//
+// devMode：开发导航与探针页的显隐开关。默认关闭 —— 生产界面不含任何开发元素。
+// 点顶栏的应用图标切换（测试用 verify.Session.dev() 打开）。
+let devMode = false
+//: 转场进度 0..1。用一次性短动画（约 0.25s，6 帧）—— 长期动画会顶到指令预算
+let animP   = 1.0
+let animId  = nil
+
+fn toggleDev(){
+    devMode = !devMode
+    ui.screen.render()
+}
+
+fn stopAnim(){
+    if animId != nil { stop_timer(animId)  animId = nil }
+}
+
+fn tickAnim(){
+    animP = animP + 0.18
+    if animP >= 1.0 { animP = 1.0  stopAnim() }
+    ui.screen.render()
+}
+
+//: 内容列入场位移：从 +18px 滑入到 0，配合进度推进形成轻过渡。
+//: 只做位移不做透明度（Splash 无逐帧 alpha 通道，改色值会闪）。
+fn animOffset(){
+    let e = animP * (2.0 - animP)
+    return floor((1.0 - e) * 18.0)
+}
+
+fn playTransition(){
+    animP = 0.0
+    stopAnim()
+    animId = start_interval(0.045, || tickAnim())
+}
+
+fn applyStyle(name){
+    styleName = name
+    if name == "light" {
+        // 浅色温柔：米白氛围底 + 纯白卡面
+        cAmb0 = #xEFE7D7
+        cAmb1 = #xECE4D4
+        cAmb2 = #xE9E1D0
+        cAmb3 = #xE6DECC
+        cAmb4 = #xE3DBC9
+        cAmb5 = #xE0D8C5
+        cAmb6 = #xDDD5C2
+        cAmb7 = #xDAD2BE
+        cPaper = #xF7F2E8
+        cCard  = #xFFFFFF
+        cInset = #xEFE8DA
+        cLine  = #xDDD4C2
+        cInk   = #x33291F
+        cInk2  = #x8A7C69
+        cInk3  = #xA99A83
+    }
+    if name == "editorial" {
+        // 编辑部排版：偏冷的纸色，对比更强
+        cAmb0 = #x221E1A
+        cAmb1 = #x25211C
+        cAmb2 = #x28241E
+        cAmb3 = #x2B2721
+        cAmb4 = #x2E2A23
+        cAmb5 = #x312D26
+        cAmb6 = #x343028
+        cAmb7 = #x37332B
+        cPaper = #xF2EFE7
+        cCard  = #xFBF9F4
+        cInset = #xE7E3D9
+        cLine  = #xD5D0C4
+        cInk   = #x23201C
+        cInk2  = #x7A7468
+        cInk3  = #x9C9689
+    }
+    if name == "dark" {
+        cAmb0 = #x15100E
+        cAmb1 = #x17120F
+        cAmb2 = #x191411
+        cAmb3 = #x1B1613
+        cAmb4 = #x1D1814
+        cAmb5 = #x1F1A15
+        cAmb6 = #x211B16
+        cAmb7 = #x231C16
+        cPaper = #xEDE4D3
+        cCard  = #xF7F1E6
+        cInset = #xE9DFCC
+        cLine  = #xDCD1BB
+        cInk   = #x3A3028
+        cInk2  = #x8A7C69
+        cInk3  = #xA99A83
+    }
+}
+
+fn cycleStyle(){
+    if styleName == "dark" { applyStyle("light") }
+    else { if styleName == "light" { applyStyle("editorial") }
+           else { applyStyle("dark") } }
+    if prefs != nil { prefs.style = styleName  savePref() }
+    statusText = "风格：" + styleName
+    ui.screen.render()
+}
+
+//: 场景氛围：不同情境的暗部色相不同（雨夜偏冷、通勤偏暖、睡前最暗）。
+//: 只动氛围底，不动内容列 —— 内容可读性优先。
+fn applySceneAmbience(scene){
+    if sceneAmb == scene { return }
+    sceneAmb = scene
+    if styleName != "dark" { return }
+    if scene == "sleep" {
+        cAmb0 = #x110E14
+        cAmb1 = #x131016
+        cAmb2 = #x151218
+        cAmb3 = #x17141A
+        cAmb4 = #x19161C
+        cAmb5 = #x1B181E
+        cAmb6 = #x1D1A20
+        cAmb7 = #x1F1C22
+    }
+    if scene == "commute" {
+        cAmb0 = #x1A1410
+        cAmb1 = #x1C1612
+        cAmb2 = #x1E1814
+        cAmb3 = #x201A16
+        cAmb4 = #x221C18
+        cAmb5 = #x241E1A
+        cAmb6 = #x26201C
+        cAmb7 = #x28221E
+    }
+    if scene == "rest" {
+        cAmb0 = #x161510
+        cAmb1 = #x181712
+        cAmb2 = #x1A1914
+        cAmb3 = #x1C1B16
+        cAmb4 = #x1E1D18
+        cAmb5 = #x201F1A
+        cAmb6 = #x22211C
+        cAmb7 = #x24231E
+    }
+    if scene == "gym" {
+        cAmb0 = #x1C1210
+        cAmb1 = #x1E1412
+        cAmb2 = #x201614
+        cAmb3 = #x221816
+        cAmb4 = #x241A18
+        cAmb5 = #x261C1A
+        cAmb6 = #x281E1C
+        cAmb7 = #x2A201E
+    }
+    if scene == "focus" {
+        cAmb0 = #x15100E
+        cAmb1 = #x17120F
+        cAmb2 = #x191411
+        cAmb3 = #x1B1613
+        cAmb4 = #x1D1814
+        cAmb5 = #x1F1A15
+        cAmb6 = #x211B16
+        cAmb7 = #x231C16
+    }
+}
+
+// ───────────────────────── 统计 ─────────────────────────
+
+//: 本周聚合。数据来自本地 history，不联网。
+//: dayBars[0] = 今天，[6] = 六天前。
+fn weeklyStats(){
+    let bars = [0 0 0 0 0 0 0]
+    let focusMin = 0
+    let commuteN = 0
+    let totalN = 0
+    for h in prefs.history {
+        let d = floor((time_now() - h.ts) / 86400)
+        if d < 7 { bars[d] = bars[d] + h.durationMin }
+        if h.scene == "focus" { focusMin = focusMin + h.durationMin }
+        if h.scene == "commute" { commuteN = commuteN + 1 }
+        totalN = totalN + 1
+    }
+    let hours = focusMin / 60.0
+    let h10 = floor(hours * 10.0) / 10.0
+    return {bars: bars focusHours: h10 commuteCount: commuteN
+            favCount: favCount() total: totalN}
+}
+
+//: 柱高换算：以本周最长的一天为基准，最高 120px
+fn barHeight(v, maxV){
+    if maxV <= 0 { return 2.0 }
+    let h = 120.0 * v / maxV
+    if h < 2.0 { return 2.0 }
+    return h
+}
+
+fn weekMax(){
+    let st = weeklyStats()
+    let m = 0
+    for b in st.bars { if b > m { m = b } }
+    return m
+}
+
+// ───────────────────────── 卡堆（多卡片管理）─────────────────────────
+
+let STACKF    = "accounts/device/stack.json"
+//: 卡堆上限。超出时归档最旧的一张。
+let CAP_STACK = 8
+//: 我的音乐最多渲染行数（全量渲染会顶到指令预算，见架构文档 R1）
+let LIB_MAX   = 20
+
+let stack = nil
+
+fn loadStack(){
+    if !fs.exists(STACKF) { return {version: 1 cards: []} }
+    let v = fs.read(STACKF).parse_json()
+    if !isJsonObject(v) { return {version: 1 cards: []} }
+    if !hasKey(v, "cards") || v.cards == nil { v.cards = [] }
+    v.version = 1
+    return v
+}
+
+fn saveStack(){
+    if stack == nil { return }
+    fs.write(STACKF, stack.to_json())
+}
+
+fn stackCount(){
+    if stack == nil { return 0 }
+    return stack.cards.len()
+}
+
+fn saveCardToStack(){
+    if card == nil { return }
+    if stack == nil { stack = loadStack() }
+    stack.cards.push(card)
+    while stack.cards.len() > CAP_STACK { stack.cards.remove(0) }
+    saveStack()
+    statusText = "已存入卡堆"
+    ui.screen.render()
+}
+
+fn removeFromStack(k){
+    if stack == nil { return }
+    if k < 0 { return }
+    if k >= stack.cards.len() { return }
+    stack.cards.remove(k)
+    saveStack()
+    statusText = "已归档"
+    ui.screen.render()
+}
+
+fn launchFromStack(k){
+    if stack == nil { return }
+    if k < 0 { return }
+    if k >= stack.cards.len() { return }
+    card = stack.cards[k]
+    card.elapsedSec = 0
+    card.startedAt = time_now()
+    card.status = "playing"
+    favMark = ""
+    statusText = ""
+    go(P_PLAY)
+    stopTimerIfAny()
+    timerId = start_interval(5.0, || tickPlay())
+}
+
+// ───────────────────────── 我的音乐 ─────────────────────────
+
+//: 收藏列表第 k 项（0 = 最新）。favTracks 追加有序，从尾部取即倒序。
+fn favAt(k){
+    if prefs == nil { return nil }
+    let arr = prefs.tags.favTracks
+    let i = arr.len() - 1 - k
+    if i < 0 { return nil }
+    return arr[i]
+}
+
+fn removeFavAt(k){
+    if prefs == nil { return }
+    let arr = prefs.tags.favTracks
+    let i = arr.len() - 1 - k
+    if i < 0 { return }
+    arr.remove(i)
+    savePref()
+    statusText = "已移除"
+    ui.screen.render()
+}
+
+fn trackScene(ref){
+    for t in DEMO { if t.ref == ref { return t.scene } }
+    return ""
+}
+
+//: 相对时间：刚刚 / N 分钟前 / N 小时前 / 昨天 / N 天前 / 更早
+fn relTime(ts){
+    if ts == nil { return "" }
+    let d = floor(time_now()) - ts
+    if d < 0 { d = 0 }
+    if d < 60 { return "刚刚" }
+    if d < 3600 { return "" + floor(d / 60) + " 分钟前" }
+    if d < 86400 { return "" + floor(d / 3600) + " 小时前" }
+    let days = floor(d / 86400)
+    if days == 1 { return "昨天" }
+    if days < 30 { return "" + days + " 天前" }
+    return "更早"
+}
+
+// ───────────────────────── 完成页引导 ─────────────────────────
+
+let feedbackDone = ""
+
+fn againSame(){
+    if card == nil { return }
+    let sc = card.scene
+    pkg = perceive("", time_now(), [])
+    pkg.scene.key = sc
+    pkg.scene.label = sceneLabelOf(sc)
+    pkg.missing = []
+    buildCard()
+}
+
+fn submitFeedback(t){
+    if t == nil { return }
+    let s = t.trim()
+    if s == "" { return }
+    prefs.feedback.push({ts: floor(time_now()) text: s})
+    trimTo(prefs.feedback, CAP_FB)
+    savePref()
+    statusText = "已记下：" + s
+    feedbackDone = s
+    ui.screen.render()
+}
+
+fn backHome(){
+    stack = loadStack()
+    feedbackDone = ""
+    go(P_IDLE)
+}
+
+fn openStack(){
+    stack = loadStack()
+    feedbackDone = ""
+    go(P_STACK)
+}
+
+fn openLibrary(){
+    go(P_LIBRARY)
+}
+
+// （本段插在视图定义之前：模板需先声明后使用）
+
+// ───────────────────────── 视图 ─────────────────────────
+
+fn devMakeCard(){
+    pkg = perceive("晚上想专注", time_now(), [])
+    pkg.missing = []
+    intent = decide(pkg)
+    card = orchestrate(intent)
+}
+
+//: 开发导航专用入口。CONFIRM / PLAY 需要 card 才渲染内容，
+//: 直接 go() 会得到空白页 —— 测试的互斥断言依赖每页都有锚点，
+//: 因此这里按需构造一张演示卡。生产流程不走这条路。
+fn devGo(p){
+    stopTimerIfAny()
+    if p == P_CONFIRM || p == P_PLAY || p == P_END {
+        if card == nil { devMakeCard() }
+    }
+    if p == P_PLAY {
+        startPlay()
+        return
+    }
+    if p == P_END {
+        // 推到完成态，等价于自然播完
+        card.elapsedSec = card.totalMin * 60
+        feedbackDone = ""
+        go(P_END)
+        return
+    }
+    if p == P_STACK {
+        stack = loadStack()
+    }
+    go(p)
+}
+
+
+//: 按钮模板。只给纯色底（不给边框色）—— draw_bg 的 border_color 支持不确定，
+//: 用色块深浅区分层级更稳。
+let BtnPrimary = ButtonFlat{height: 58
+    draw_bg +: {border_radius: 14.0 color: cAmber color_hover: cAmberSoft color_down: cAmberDeep border_size: 0.0}
+    draw_text +: {color: #xffffff color_hover: #xffffff color_down: #xffffff}}
+
+let BtnGhost = ButtonFlat{height: 46
+    draw_bg +: {border_radius: 12.0 color: cInset color_hover: cCard color_down: cCard border_size: 0.0}
+    draw_text +: {color: cAmberDeep color_hover: cAmberDeep color_down: cAmberDeep}}
+
+let BtnQuick = ButtonFlat{height: 46
+    draw_bg +: {border_radius: 11.0 color: cCard color_hover: cInset color_down: cInset border_size: 0.0}
+    draw_text +: {color: cAmberDeep color_hover: cAmberDeep color_down: cAmberDeep}}
+
+let BtnTiny = ButtonFlat{height: 38
+    draw_bg +: {border_radius: 9.0 color: cInset color_hover: cCard color_down: cCard border_size: 0.0}
+    draw_text +: {color: cInk color_hover: cInk color_down: cInk}}
+
+// 结构说明：on_render 不能挂在根控件上 —— 实测挂在根上整个闭包不产出任何子节点
+// （快照里只剩一个全屏空 View）。必须与旧版同构：根为普通 SolidView，
+// 其内再绑定 `screen := ScrollYView{ on_render: || ... }`。
+SolidView{width: Fill height: Fill draw_bg.color: cAmb0
+
+screen := ScrollYView{width: Fill height: Fill flow: Down on_render: || {
+
+    SolidView{width: Fill height: Fill flow: Right draw_bg.color: cAmb0
+
+        // ── L0 左氛围 ──
+        View{width: Fill height: Fill flow: Down
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb0}
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb1}
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb2}
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb3}
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb4}
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb5}
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb6}
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb7}
+        }
+
+        // ── L1 内容列 ──
+        SolidView{width: COL_W height: Fill flow: Down draw_bg.color: cPaper
+
+            // 注意：这里不能加 margin 做转场位移 ——
+            // 给 ScrollYView 的 Fill 子节点加 margin 会破坏其内容高度计算，
+            // 实测后果是「内容超过约 270px 的部分整体不绘制」（按钮全消失）。
+            // 转场改为只驱动一个不参与布局的进度变量（见 playTransition）。
+            View{width: Fill height: Fill flow: Down padding: PAD spacing: 10
+
+                // ══ 开发导航（devMode 关闭时不渲染）══
+                View{width: Fill height: Fit flow: Down spacing: 6
+                    if devMode {
+                    Label{width: Fill text: "开发导航 · 阶段9移除"
+                          draw_text.color: cInk3
+                          draw_text.text_style.font_size: 11}
+                    View{width: Fill height: Fit flow: Right spacing: 4
+                        ButtonFlat{width: 34 height: 34 text: "启"
+                            on_click: || devGo(P_ONBOARD)}
+                        ButtonFlat{width: 34 height: 34 text: "入"
+                            on_click: || devGo(P_IDLE)}
+                        ButtonFlat{width: 34 height: 34 text: "问"
+                            on_click: || devGo(P_CLARIFY)}
+                        ButtonFlat{width: 34 height: 34 text: "卡"
+                            on_click: || devGo(P_CONFIRM)}
+                        ButtonFlat{width: 34 height: 34 text: "播"
+                            on_click: || devGo(P_PLAY)}
+                        ButtonFlat{width: 34 height: 34 text: "完"
+                            on_click: || devGo(P_END)}
+                        ButtonFlat{width: 34 height: 34 text: "堆"
+                            on_click: || devGo(P_STACK)}
+                        ButtonFlat{width: 34 height: 34 text: "乐"
+                            on_click: || devGo(P_LIBRARY)}
+                        ButtonFlat{width: 34 height: 34 text: "统"
+                            on_click: || devGo(P_STATS)}
+                        ButtonFlat{width: 34 height: 34 text: "探"
+                            on_click: || devGo(P_DEV)}
+                    }
+                    }
+                }
+
+                // ══ 状态提示条 ══
+                View{width: Fill height: Fit flow: Down
+                    if statusText != "" {
+                        SolidView{width: Fill height: Fit padding: 12
+                            draw_bg +: {color: cInset border_radius: 10.0}
+                            Label{width: Fill text: statusText
+                                  draw_text.color: cAmberDeep
+                                  draw_text.text_style.font_size: 12}
+                        }
+                    }
+                }
+
+                // ══ 顶栏：左页面名 ／ 右（风格切换 + 应用图标）══
+                View{width: Fill height: Fit flow: Right spacing: 8
+                    Label{width: Fill text: pageTitle()
+                          draw_text.color: cInk2
+                          draw_text.text_style.font_size: 13}
+
+                    // 风格切换：三色点表示三套主题（点击循环切换）
+                    View{width: Fit height: Fit flow: Right spacing: 3
+                        // 用按钮自身文本 —— 内嵌 Label 的点击命中不稳定（实测点不到）
+                        ButtonFlat{width: 34 height: 30 text: "风"
+                            on_click: || cycleStyle()
+                            draw_bg +: {border_radius: 9.0
+                                color: cInset color_hover: cCard color_down: cCard
+                                border_size: 0.0}
+                            draw_text +: {color: cAmberDeep color_hover: cAmberDeep
+                                color_down: cAmberDeep}}
+                    }
+
+                    // 应用图标：任务卡叠层（琥珀底 + 两张错位白卡）
+                    // 同时是开发导航的开关（点击切换 devMode，生产默认关闭）
+                    ButtonFlat{width: 30 height: 30
+                        on_click: || toggleDev()
+                        draw_bg +: {border_radius: 9.0
+                            color: cAmber color_hover: cAmberSoft color_down: cAmberDeep
+                            border_size: 0.0}
+                        draw_text +: {color: cAmber color_hover: cAmber color_down: cAmber}}
+                }
+
+                // ══ 固定槽位 1/9：首启选风格（阶段 8 实现，此处保留占位）══
+                View{width: Fill height: Fit flow: Down spacing: 4
+                    if page == P_ONBOARD {
+                        Label{width: Fill text: "选择一种风格"
+                              draw_text.color: cInk
+                              draw_text.text_style.font_size: 24}
+                    }
+                }
+
+                // ══ 固定槽位 2/9：输入 ══
+                View{width: Fill height: Fit flow: Down spacing: 10
+                    if page == P_IDLE {
+                        SolidView{width: Fill height: Fit flow: Down padding: 16 spacing: 8
+                            draw_bg +: {color: cCard border_radius: 16.0}
+                            mainEntry := TextInput{width: Fill height: 44
+                                empty_text: "说一句现在想做什么"
+                                draw_bg +: {color: cCard
+                                    color_hover: cCard
+                                    color_focus: cCard
+                                    color_empty: cCard
+                                    border_radius: 10.0}
+                                draw_text +: {color: cInk
+                                    color_hover: cInk
+                                    color_focus: cInk
+                                    color_empty: cInk3}}
+                            Label{width: Fill text: "比如 晚上想专注 ／ 早上通勤 45 分钟"
+                                  draw_text.color: cInk2
+                                  draw_text.text_style.font_size: 11}
+                        }
+
+                        BtnPrimary{width: Fill text: "生成任务卡"
+                            on_click: || submitInput()}
+
+                        Label{width: Fill text: "或直接选一个场景"
+                              draw_text.color: cInk2
+                              draw_text.text_style.font_size: 11}
+
+                        View{width: Fill height: Fit flow: Right spacing: 8
+                            BtnQuick{width: Fill text: "专注"
+                                on_click: || quickScene("focus")}
+                            BtnQuick{width: Fill text: "通勤"
+                                on_click: || quickScene("commute")}
+                            BtnQuick{width: Fill text: "睡前"
+                                on_click: || quickScene("sleep")}
+                            BtnQuick{width: Fill text: "健身"
+                                on_click: || quickScene("gym")}
+                        }
+
+                        // 续播条：存在未播完的快照时出现
+                        if hasPending() {
+                            SolidView{width: Fill height: Fit flow: Down padding: 14 spacing: 8
+                                draw_bg +: {color: cInset border_radius: 12.0}
+                                Label{width: Fill text: "上次还没听完"
+                                      draw_text.color: cInk
+                                      draw_text.text_style.font_size: 14}
+                                View{width: Fill height: Fit flow: Right spacing: 8
+                                    BtnTiny{width: Fill text: "继续播放"
+                                        on_click: || resumePending()}
+                                    BtnTiny{width: Fill text: "清除"
+                                        on_click: || dropPending()}
+                                }
+                            }
+                        }
+
+                        // 次级入口：卡堆 / 我的音乐（统计在阶段 8 加入）
+                        View{width: Fill height: Fit flow: Right spacing: 8
+                            BtnTiny{width: Fill text: "卡堆"
+                                on_click: || openStack()}
+                            BtnTiny{width: Fill text: "我的音乐"
+                                on_click: || openLibrary()}
+                            BtnTiny{width: Fill text: "统计"
+                                on_click: || go(P_STATS)}
+                        }
+                    }
+                }
+
+                // ══ 固定槽位 3/9：追问（只问一轮）══
+                View{width: Fill height: Fit flow: Down spacing: 10
+                    if page == P_CLARIFY {
+                        Label{width: Fill text: "现在在做什么"
+                              draw_text.color: cInk
+                              draw_text.text_style.font_size: 24}
+                        View{width: Fill height: Fit flow: Right spacing: 8
+                            BtnGhost{width: Fill text: "专注"
+                                on_click: || chooseScene("focus")}
+                            BtnGhost{width: Fill text: "通勤"
+                                on_click: || chooseScene("commute")}
+                        }
+                        BtnGhost{width: Fill text: "你帮我决定"
+                            on_click: || skipClarify()}
+                    }
+                }
+
+                // ══ 固定槽位 4/9：任务卡 ══
+                View{width: Fill height: Fit flow: Down spacing: 10
+                    if page == P_CONFIRM {
+                        if card != nil {
+                            View{width: Fill height: Fit flow: Right
+                                SolidView{width: Fit height: Fit padding: 10 flow: Right
+                                    draw_bg +: {color: cAmber border_radius: 14.0}
+                                    Label{width: Fit text: card.sceneLabel + " · " + ("" + card.totalMin) + " 分钟"
+                                          draw_text.color: #xffffff
+                                          draw_text.text_style.font_size: 12}
+                                }
+                                Label{width: Fill text: ""
+                                      draw_text.color: cInk3
+                                      draw_text.text_style.font_size: 11}
+                            }
+
+                            // 内联选择器（不用弹层：增量渲染下弹层容易留残影）
+                            if picker == "duration" {
+                                View{width: Fill height: Fit flow: Right spacing: 6
+                                    for d in durationOptions() {
+                                        BtnTiny{width: Fill text: ("" + d) + " 分钟"
+                                            on_click: || setDuration(d)}
+                                    }
+                                }
+                            }
+                            if picker == "pomodoro" {
+                                View{width: Fill height: Fit flow: Right spacing: 6
+                                    for p in pomoOptions() {
+                                        BtnTiny{width: Fill text: ("" + p) + " 分钟"
+                                            on_click: || setPomodoro(p)}
+                                    }
+                                }
+                            }
+
+                            Label{width: Fill text: card.reason
+                                  draw_text.color: cInk2
+                                  draw_text.text_style.font_size: 12}
+
+                            for seg in card.segments {
+                                SolidView{width: Fill height: Fit padding: 14 flow: Right spacing: 8
+                                    draw_bg +: {color: cInset border_radius: 12.0}
+                                    Label{width: Fill text: segLabel(seg.phase) + " " + ("" + seg.min) + " 分钟"
+                                          draw_text.color: cInk
+                                          draw_text.text_style.font_size: 15}
+                                    Label{width: Fit text: trackTitle(seg.src)
+                                          draw_text.color: cInk2
+                                          draw_text.text_style.font_size: 11}
+                                }
+                            }
+
+                            BtnPrimary{width: Fill text: "开始播放"
+                                on_click: || startPlay()}
+
+                            View{width: Fill height: Fit flow: Right spacing: 8
+                                BtnTiny{width: Fill text: "调整时长"
+                                    on_click: || openPicker("duration")}
+                                BtnTiny{width: Fill text: "换一批"
+                                    on_click: || refreshTracks()}
+                                BtnTiny{width: Fill text: "取消"
+                                    on_click: || cancelCard()}
+                            }
+
+                            BtnGhost{width: Fill text: "存进卡堆"
+                                on_click: || saveCardToStack()}
+
+                            // 番茄钟设置（仅专注场景）
+                            if card.scene == "focus" {
+                                View{width: Fill height: Fit flow: Right spacing: 8
+                                    Label{width: Fill text: "番茄钟"
+                                          draw_text.color: cInk2
+                                          draw_text.text_style.font_size: 12}
+                                    BtnTiny{width: Fit text: ("" + card.pomodoroMin) + " 分钟"
+                                        on_click: || openPicker("pomodoro")}
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ══ 固定槽位 5/9：播放 ══
+                View{width: Fill height: Fit flow: Down spacing: 10
+                    if page == P_PLAY {
+                        if card != nil {
+                            View{width: Fill height: Fit flow: Right
+                                SolidView{width: Fit height: Fit padding: 10 flow: Right
+                                    draw_bg +: {color: cAmber border_radius: 14.0}
+                                    Label{width: Fit text: card.sceneLabel
+                                          draw_text.color: #xffffff
+                                          draw_text.text_style.font_size: 12}
+                                }
+                                Label{width: Fill text: mmss(card.elapsedSec) + " / " + mmss(card.totalMin * 60)
+                                      draw_text.color: cInk2
+                                      draw_text.text_style.font_size: 12}
+                            }
+
+                            Label{width: Fill text: segLabel(currentSeg().phase)
+                                  draw_text.color: cInk
+                                  draw_text.text_style.font_size: 30}
+
+                            // 番茄钟（仅专注场景）：番茄图标 + 第 N 轮 + 本轮剩余 + 轮次点阵
+                            if card.scene == "focus" {
+                                if card.pomodoroMin > 0 {
+                                    SolidView{width: Fill height: Fit flow: Right spacing: 10
+                                        padding: 12
+                                        draw_bg +: {color: cInset border_radius: 10.0}
+                                        // 番茄图标：琥珀圆 + 深色蒂（几何绘制，不用 emoji）
+                                        View{width: Fit height: Fit flow: Down spacing: 0
+                                            SolidView{width: 8 height: 4
+                                                draw_bg +: {color: cAmberDeep border_radius: 2.0}}
+                                            SolidView{width: 18 height: 18
+                                                draw_bg +: {color: cAmber border_radius: 9.0}}
+                                        }
+                                        Label{width: Fill text: "第 " + ("" + pomoState().round) + "/" + ("" + pomoState().total) + " 轮"
+                                              draw_text.color: cInk
+                                              draw_text.text_style.font_size: 13}
+                                        Label{width: Fit text: mmss(pomoState().remainSec)
+                                              draw_text.color: cAmberDeep
+                                              draw_text.text_style.font_size: 13}
+                                        // 轮次点阵：已过实心、当前琥珀、未到空心
+                                        View{width: Fit height: Fit flow: Right spacing: 4
+                                            for k in pomoState().total {
+                                                if k + 1 < pomoState().round {
+                                                    SolidView{width: 8 height: 8
+                                                        draw_bg +: {color: cInk2 border_radius: 4.0}}
+                                                }
+                                                if k + 1 == pomoState().round {
+                                                    SolidView{width: 8 height: 8
+                                                        draw_bg +: {color: cAmber border_radius: 4.0}}
+                                                }
+                                                if k + 1 > pomoState().round {
+                                                    SolidView{width: 8 height: 8
+                                                        draw_bg +: {color: cCardLine border_radius: 4.0}}
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            SolidView{width: Fill height: 14 flow: Right
+                                draw_bg +: {color: cInset border_radius: 7.0}
+                                SolidView{width: clamp(floor(372.0 * pct()), 2.0, 372.0)
+                                    height: 14
+                                    draw_bg +: {color: cAmber border_radius: 7.0}}
+                            }
+
+                            // 曲目焦点块（深色）
+                            SolidView{width: Fill height: Fit flow: Down padding: 16 spacing: 4
+                                draw_bg +: {color: cFocus border_radius: 12.0}
+                                View{width: Fill height: Fit flow: Right
+                                    Label{width: Fill text: trackTitle(currentSeg().src)
+                                          draw_text.color: cAmbInk
+                                          draw_text.text_style.font_size: 18}
+                                    if favMark == currentSeg().src {
+                                        Label{width: Fit text: "已收藏"
+                                              draw_text.color: cAmberSoft
+                                              draw_text.text_style.font_size: 11}
+                                    }
+                                }
+                                Label{width: Fill text: segLabel(currentSeg().phase) + " " + ("" + currentSeg().min) + " 分钟"
+                                      draw_text.color: cAmbInk2
+                                      draw_text.text_style.font_size: 11}
+                            }
+
+                            View{width: Fill height: Fit flow: Right spacing: 8
+                                BtnGhost{width: Fill text: "跳过"
+                                    on_click: || onSkip()}
+                                BtnGhost{width: Fill text: "收藏"
+                                    on_click: || onFav()}
+                                BtnGhost{width: Fill text: "结束"
+                                    on_click: || quitPlay()}
+                            }
+                        }
+                    }
+                }
+
+                // ══ 固定槽位 6/9：完成（四类引导）══
+                View{width: Fill height: Fit flow: Down spacing: 10
+                    if page == P_END {
+                        if card != nil {
+                            Label{width: Fill text: "听完了"
+                                  draw_text.color: cInk
+                                  draw_text.text_style.font_size: 30}
+
+                            // 弱化回顾：一行带过
+                            Label{width: Fill
+                                  text: card.sceneLabel + " · 3 段 · " + ("" + card.totalMin) + " 分钟"
+                                  draw_text.color: cInk2
+                                  draw_text.text_style.font_size: 12}
+
+                            // 主引导：继续收听
+                            BtnPrimary{width: Fill text: "继续收听"
+                                on_click: || againSame()}
+
+                            // 次引导：换个内容
+                            View{width: Fill height: Fit flow: Right spacing: 8
+                                BtnGhost{width: Fill text: "换个场景"
+                                    on_click: || backHome()}
+                                BtnGhost{width: Fill text: "打开卡堆"
+                                    on_click: || openStack()}
+                            }
+
+                            // 反馈入口
+                            Label{width: Fill text: "想让下次更好"
+                                  draw_text.color: cInk2
+                                  draw_text.text_style.font_size: 12}
+                            View{width: Fill height: Fit flow: Right spacing: 8
+                                fbEntry := TextInput{width: Fill height: 40
+                                    empty_text: "说一句，比如 再安静一点"
+                                    draw_bg +: {color: cCard
+                                        color_hover: cCard
+                                        color_focus: cCard
+                                        color_empty: cCard
+                                        border_radius: 10.0}
+                                    draw_text +: {color: cInk
+                                        color_hover: cInk
+                                        color_focus: cInk
+                                        color_empty: cInk3}}
+                                BtnTiny{width: 56 text: "记下"
+                                    on_click: || submitFeedback(ui.fbEntry.text())}
+                            }
+                            View{width: Fill height: Fit flow: Right spacing: 6
+                                BtnTiny{width: Fill text: "再安静一点"
+                                    on_click: || submitFeedback("再安静一点")}
+                                BtnTiny{width: Fill text: "时长短一点"
+                                    on_click: || submitFeedback("时长短一点")}
+                                BtnTiny{width: Fill text: "曲目换换"
+                                    on_click: || submitFeedback("曲目换换")}
+                            }
+                        }
+                    }
+                }
+
+                // ══ 固定槽位 7/9：卡堆 ══
+                View{width: Fill height: Fit flow: Down spacing: 8
+                    if page == P_STACK {
+                        Label{width: Fill text: "卡堆管理"
+                              draw_text.color: cInk
+                              draw_text.text_style.font_size: 24}
+                        View{width: Fill height: Fit flow: Right
+                            Label{width: Fill text: ("" + stackCount()) + " 张已保存 · 上限 8 张"
+                                  draw_text.color: cInk2
+                                  draw_text.text_style.font_size: 12}
+                            BtnTiny{width: 88 text: "回到输入"
+                                on_click: || backHome()}
+                        }
+
+                        if stackCount() < 1 {
+                            Label{width: Fill text: "还没有保存的任务卡"
+                                  draw_text.color: cInk3
+                                  draw_text.text_style.font_size: 13}
+                        }
+                        for k in stackCount() {
+                            SolidView{width: Fill height: Fit flow: Down padding: 14 spacing: 6
+                                draw_bg +: {color: cCard border_radius: 12.0}
+                                View{width: Fill height: Fit flow: Right
+                                    Label{width: Fill
+                                          text: stack.cards[k].sceneLabel + " · " + ("" + stack.cards[k].totalMin) + " 分钟"
+                                          draw_text.color: cInk
+                                          draw_text.text_style.font_size: 16}
+                                    Label{width: Fit
+                                          text: relTime(stack.cards[k].createdAt)
+                                          draw_text.color: cInk3
+                                          draw_text.text_style.font_size: 11}
+                                }
+                                View{width: Fill height: Fit flow: Right spacing: 8
+                                    BtnTiny{width: Fill text: "启动"
+                                        on_click: || launchFromStack(k)}
+                                    BtnTiny{width: Fill text: "归档"
+                                        on_click: || removeFromStack(k)}
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ══ 固定槽位 8/9：我的音乐 ══
+                View{width: Fill height: Fit flow: Down spacing: 8
+                    if page == P_LIBRARY {
+                        Label{width: Fill text: "收藏的曲目"
+                              draw_text.color: cInk
+                              draw_text.text_style.font_size: 24}
+                        View{width: Fill height: Fit flow: Right
+                            Label{width: Fill text: ("" + favCount()) + " 首"
+                                  draw_text.color: cInk2
+                                  draw_text.text_style.font_size: 12}
+                            BtnTiny{width: 88 text: "回到输入"
+                                on_click: || backHome()}
+                        }
+                        Label{width: Fill text: "收藏过的曲目在后续安排中优先出现"
+                              draw_text.color: cInk3
+                              draw_text.text_style.font_size: 11}
+
+                        if favCount() < 1 {
+                            Label{width: Fill text: "还没有收藏，遇到喜欢的点一下收藏"
+                                  draw_text.color: cInk3
+                                  draw_text.text_style.font_size: 13}
+                        }
+                        for k in favCount() {
+                            if k < LIB_MAX {
+                                SolidView{width: Fill height: Fit padding: 12 flow: Right spacing: 8
+                                    draw_bg +: {color: cCard border_radius: 12.0}
+                                    View{width: Fill height: Fit flow: Down spacing: 2
+                                        Label{width: Fill text: trackTitle(favAt(k).ref)
+                                              draw_text.color: cInk
+                                              draw_text.text_style.font_size: 15}
+                                        Label{width: Fill
+                                              text: sceneLabelOf(trackScene(favAt(k).ref)) + " · " + relTime(favAt(k).ts)
+                                              draw_text.color: cInk2
+                                              draw_text.text_style.font_size: 11}
+                                    }
+                                    BtnTiny{width: 56 text: "移除"
+                                        on_click: || removeFavAt(k)}
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ══ 固定槽位 9/9：统计 ══
+                View{width: Fill height: Fit flow: Down spacing: 10
+                    if page == P_STATS {
+                        Label{width: Fill text: "本周概览"
+                              draw_text.color: cInk
+                              draw_text.text_style.font_size: 24}
+                        View{width: Fill height: Fit flow: Right
+                            Label{width: Fill text: "数据来自本地记录 · 不联网"
+                                  draw_text.color: cInk3
+                                  draw_text.text_style.font_size: 11}
+                            BtnTiny{width: 88 text: "回到输入"
+                                on_click: || backHome()}
+                        }
+
+                        // 三张数字卡
+                        View{width: Fill height: Fit flow: Right spacing: 8
+                            SolidView{width: Fill height: Fit flow: Down padding: 14 spacing: 4
+                                draw_bg +: {color: cCard border_radius: 12.0}
+                                Label{width: Fill text: "" + weeklyStats().focusHours
+                                      draw_text.color: cAmber
+                                      draw_text.text_style.font_size: 26}
+                                Label{width: Fill text: "专注小时"
+                                      draw_text.color: cInk2
+                                      draw_text.text_style.font_size: 11}
+                            }
+                            SolidView{width: Fill height: Fit flow: Down padding: 14 spacing: 4
+                                draw_bg +: {color: cCard border_radius: 12.0}
+                                Label{width: Fill text: "" + weeklyStats().commuteCount
+                                      draw_text.color: cAmber
+                                      draw_text.text_style.font_size: 26}
+                                Label{width: Fill text: "通勤次数"
+                                      draw_text.color: cInk2
+                                      draw_text.text_style.font_size: 11}
+                            }
+                            SolidView{width: Fill height: Fit flow: Down padding: 14 spacing: 4
+                                draw_bg +: {color: cCard border_radius: 12.0}
+                                Label{width: Fill text: "" + weeklyStats().favCount
+                                      draw_text.color: cAmber
+                                      draw_text.text_style.font_size: 26}
+                                Label{width: Fill text: "收藏曲目"
+                                      draw_text.color: cInk2
+                                      draw_text.text_style.font_size: 11}
+                            }
+                        }
+
+                        // 周柱状图：今天在最右
+                        View{width: Fill height: Fit flow: Right spacing: 6
+                            for k in 7 {
+                                View{width: Fill height: Fit flow: Down spacing: 4
+                                    View{width: Fill height: 128 flow: Down
+                                        View{width: Fill height: Fill}
+                                        SolidView{width: Fill
+                                            height: barHeight(weeklyStats().bars[6 - k], weekMax())
+                                            draw_bg +: {color: cInk3 border_radius: 3.0}}
+                                    }
+                                    Label{width: Fill text: "" + (weeklyStats().bars[6 - k])
+                                          draw_text.color: cInk3
+                                          draw_text.text_style.font_size: 10}
+                                }
+                            }
+                        }
+
+                        if weeklyStats().total < 1 {
+                            Label{width: Fill text: "本周还没有记录，去听一次就有了"
+                                  draw_text.color: cInk3
+                                  draw_text.text_style.font_size: 12}
+                        }
+                    }
+                }
+
+                // ══ 固定槽位 10/10：开发探针（阶段9移除）══
+                View{width: Fill height: Fit flow: Down spacing: 6
+                    if page == P_DEV {
+                        if devMode {
+                        Label{width: Fill text: "后端探针"
+                              draw_text.color: cInk
+                              draw_text.text_style.font_size: 18}
+
+                        View{width: Fill height: Fit flow: Right spacing: 6
+                            probeEntry := TextInput{width: Fill height: 38
+                                empty_text: "输入一句话"
+                                draw_bg +: {color: cCard
+                                    color_hover: cCard
+                                    color_focus: cCard
+                                    color_empty: cCard
+                                    border_radius: 9.0}
+                                draw_text +: {color: cInk
+                                    color_hover: cInk
+                                    color_focus: cInk
+                                    color_empty: cInk2}}
+                            ButtonFlat{width: 56 height: 38 text: "跑"
+                                on_click: || runProbe()}
+                        }
+
+                        Label{width: Fill text: "raw=" + pbRaw
+                              draw_text.color: cInk2
+                              draw_text.text_style.font_size: 11}
+                        Label{width: Fill text: "scene=" + pbScene
+                              draw_text.color: cInk
+                              draw_text.text_style.font_size: 12}
+                        Label{width: Fill text: "bucket=" + pbBucket
+                              draw_text.color: cInk
+                              draw_text.text_style.font_size: 12}
+                        Label{width: Fill text: "env=" + pbEnv
+                              draw_text.color: cInk
+                              draw_text.text_style.font_size: 12}
+                        Label{width: Fill text: "missing=" + pbMissing
+                              draw_text.color: cInk
+                              draw_text.text_style.font_size: 12}
+                        Label{width: Fill text: "dur=" + pbDur
+                              draw_text.color: cInk
+                              draw_text.text_style.font_size: 12}
+                        Label{width: Fill text: "mood=" + pbMood
+                              draw_text.color: cInk
+                              draw_text.text_style.font_size: 12}
+                        Label{width: Fill text: "reason=" + pbReason
+                              draw_text.color: cInk2
+                              draw_text.text_style.font_size: 11}
+                        Label{width: Fill text: "segs=" + pbSegs
+                              draw_text.color: cInk2
+                              draw_text.text_style.font_size: 11}
+                        Label{width: Fill text: "tracks=" + pbTracks
+                              draw_text.color: cInk2
+                              draw_text.text_style.font_size: 11}
+                        }
+                    }
+                }
+
+                View{width: Fill height: Fill}
+
+            }
+        }
+
+        // ── L0 右氛围 ──
+        View{width: Fill height: Fill flow: Down
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb0}
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb1}
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb2}
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb3}
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb4}
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb5}
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb6}
+            SolidView{width: Fill height: Fill draw_bg.color: cAmb7}
+        }
+    }
+}}
+}

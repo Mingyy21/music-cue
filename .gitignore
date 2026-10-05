@@ -1,0 +1,18 @@
+build/
+target/
+
+# 本地运行产物 —— 每次运行都会变，不能进版本库
+.local-state/
+.demo-state/
+.run.log
+*.pid
+
+# 编辑/改写前的备份
+.backup/
+
+# 临时抓帧（调试截图）
+bundle/screenshots/_*.png
+
+*.key
+*.cert
+.DS_Store
