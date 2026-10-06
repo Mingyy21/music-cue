@@ -1,165 +1,171 @@
 # 情境音乐任务卡（music.cue）
 
-跑在 OctoSense 上的小程序（OctoScript / Splash）。你说一句当下情境的话，它生成一张播放任务卡：
-情境 + 时长 + 渐入/稳定/收尾三段 + 每段一句理由。你点头后卡片全程跟随。
+说一句现在想做什么，得到一张分好段、写好理由的播放任务卡。
 
-**我们不做播放器，只做播放任务的组织与状态跟进。**
+运行在 [OctoSense](https://github.com/OctoSense-org/OctoSense) 上的 OctoScript / Splash 应用，
+为 GoSIM Agentic App 2026 初赛提交而作。
 
----
+## 这是什么
+
+用户打开音乐 App 时，真正在想的通常不是「听哪首歌」，而是「接下来这一段时间我打算怎么过」。
+现有产品把选什么、听多久这件事原样丢回给用户，于是大多数时候我们只是随手点开一个歌单。
+
+music.cue 把这个顺序倒过来：先说一句现在的状态，比如「晚上想专注」「早上通勤 45 分钟」，
+由它排出一张播放任务卡——场景、总时长、渐入／稳定／收尾三段，以及每一段为什么这么排。
+确认之后卡片开始计时，播放途中可以收藏、跳过、改时长，也可以存档下次接着用。
+
+产品上刻意守住了三条边界：
+
+- **不播放音乐。** 进度按三段时长本地模拟推进，界面上有明确标注。
+- **不接入版权曲库。** 曲库是内置的示例数据，用于演示卡片结构，不存储、不传输任何音频内容。
+- **不是四个 AI 进程。** 宿主当前没有 shell 真正运行多 Agent，`model.complete` 在 card-host
+  返回 no service。感知、决策、编排、守护是四个纯代码模块，由状态机按序调度，
+  决策走本地规则表；AI 分支已预留，默认关闭。
+
+## 主要功能
+
+- **情境识别**：专注、通勤、睡前、健身、休息五类场景，中英文关键词命中。时长从原话里取
+  （第一个 ≥ 5 的数字）。原话中的时间语义优先于系统时间——说「早上通勤」，夜里测也是早上桶。
+- **三段任务卡**：渐入／稳定／收尾，每段给出理由与来源曲目。时长闭合校验不通过会重排一次，
+  仍不通过则降级为单段简化卡。
+- **只问一次**：场景没识别出来时问一次「现在在做什么」，也可以点「你帮我决定」直接兜底为专注。
+  时间取系统值、环境默认室内，都不主动追问。
+- **番茄钟**：专注场景默认 25 分钟一轮，稳定段按轮切分，每 4 轮结束提示长休，可切 25 / 45 / 60。
+- **播放中微调**：改时长、切番茄档位、「换一批」重抽三段曲目（段落结构与时长保留）。
+- **偏好回流**：收藏 +1.0／次，跳过 −1.5／次；同一首跳过 2 次进黑名单；收藏过的曲目后续优先出现。
+- **续播**：中途退出会保存进度快照，下次打开提示续播，播完自动清除。
+- **卡堆**：最多存 8 张卡片，超出归档最旧的一张，可从卡堆里直接重启任意一张。
+- **我的音乐**：查看收藏过的曲目与收藏时间，可逐条移除。
+- **本周概览**：近 7 天时长柱状图、专注小时数、通勤次数、收藏数。
+- **三套视觉**：暗色沉浸／浅色温柔／编辑部排版，选择写入偏好；暗色下不同场景的氛围色相不同。
+- **全部本地**：收藏、跳过、播放历史、续播快照、事件日志写入应用私有空间，配额 16 MiB；
+  只申请 `storage` 能力，不联网、不登录（登录归宿主）。
+
+## 演示视频
+
+尚未录制。录制后命名为 `demo.mp4` 放在仓库根目录，本节用相对路径引用。
+
+## 应用截图
+
+以下均为 Windows card-host 的真实渲染截图。
+
+| 输入页 | 任务卡 |
+| --- | --- |
+| <img src="bundle/screenshots/04-idle.png" alt="输入页：一句话输入与场景快选" width="300"> | <img src="bundle/screenshots/02-confirm.png" alt="任务卡：专注 90 分钟，三段结构与每段理由" width="300"> |
+
+| 播放中 | 我的音乐 |
+| --- | --- |
+| <img src="bundle/screenshots/03-playing.png" alt="播放中：当前段落、番茄轮次与进度" width="300"> | <img src="bundle/screenshots/03-mine.png" alt="我的音乐：收藏的曲目与收藏时间，可移除" width="300"> |
 
 ## 快速开始
 
-前置：已装好 [OctoSense App Hub](https://github.com/OctoSense-org/OctoSense-App-Hub)
-并通过 `octo doctor` 校验（本项目在 Windows / card-host 环境实测通过）。
+需要 Python 3 和构建好的 OctoSense App Hub 宿主工具。三步跑起来，完整说明见[本地运行](#本地运行)：
 
-```bash
-export OCTO_HUB="<App-Hub>/target/release/hub.exe"          # Windows 上是 hub.exe
-export OCTO_CARD_HOST="<App-Hub>/target/release/card-host.exe"
-export OCTOSENSE_APP_HUB="<App-Hub>"
-
-cd <OctoScript-App-Design-Flow>
-python tools/octo doctor                              # 6/6 全绿
+```sh
+cd <workspace>/OctoScript-App-Design-Flow
+python tools/octo doctor                              # 环境自检，应 6/6 全绿
 python tools/octo run <app>/bundle --port 8141 --hidden --detach
-python tools/octo shot 8141 <app>/bundle/screenshots/01-main.png
-python tools/octo check <app>/bundle                 # 应为 PASSED
-curl -s 127.0.0.1:8141/quit                          # 停止
+python tools/octo check <app>/bundle                  # 门检，应为 PASSED
 ```
 
-交互端点（用于自动化测试）：
+## 本地运行
+
+**构建宿主工具（只需一次）：**
+
+```sh
+cd <workspace>/OctoSense-App-Hub
+cargo build --release -p octosense-card-host -p octosense-app-hub
+```
+
+**让 `tools/octo` 找到它们。** Windows 上它的 `find_binary()` 只找裸名、不试 `.exe`，两种方式任选：
+
+```sh
+# 方式一：显式环境变量
+export OCTO_HUB="<App-Hub>/target/release/hub.exe"
+export OCTO_CARD_HOST="<App-Hub>/target/release/card-host.exe"
+export OCTOSENSE_APP_HUB="<App-Hub>"
+```
+
+```sh
+# 方式二：把 release 目录加进 PATH（shutil.which 会自动试 PATHEXT）
+export PATH="$PATH:<App-Hub>/target/release"
+```
+
+**启动、截图、停止：**
+
+```sh
+python tools/octo run <app>/bundle --port 8141 --hidden --detach   # 启动（无头，后台）
+python tools/octo shot 8141 <app>/bundle/screenshots/01-main.png   # 截图
+curl -s 127.0.0.1:8141/quit                                        # 停止
+```
+
+自动化测试走宿主的远程桥接：
 
 | 端点 | 用途 |
-|---|---|
+| --- | --- |
 | `GET /snap` | 组件树 JSON（根节点 `ty="Splash"` 需过滤） |
 | `GET /click?x=&y=&wait=` | 点击 |
 | `GET /t?t=<urlencoded>` | 输入文本 |
 | `GET /quit` | 停止 |
 
-> Windows 注意：`tools/octo` 的 `find_binary()` 只找裸名、不试 `.exe`。
-> 把 `target/release` 加进用户 PATH 可绕过（`shutil.which` 会试 PATHEXT）。
+**Windows 开发提效：**
 
----
+- `dev.bat` — 一键环境：`dev.bat doctor` / `run` / `shot` / `check` / `quit`，
+  或直接 `dev.bat` 进入已配好环境变量的 shell
+- `open.sh` — 以 `1280x800` 打开可见窗口（设计主档宽度；`octo run` 默认 412 宽会裁掉内容列），
+  使用独立数据目录 `.demo-state`，避免测试写入污染演示状态
+
+运行产物在 `.local-state/`（应用私有空间、偏好、续播快照与事件日志），已被 Git 忽略。
 
 ## 怎么用
 
-1. 在输入框说一句话，例如「晚上想专注」「早上通勤 45 分钟」「听点歌」
-2. 场景词没识别到时，它会问一次「现在在做什么？」——**只问一次，不连环追问**
-3. 拿到卡片后点「开始播放」
-4. 播放中可以「跳过」或「收藏」，每次都会**立刻换一首同风格的**
-5. 随时点「结束」，下次打开会提示续播
-6. 输入页点「我的音乐」查看收藏过的曲目与收藏时间
+输入一句话即可：
 
-支持的场景：**专注**（默认 90 分钟）、**通勤**（默认 30 分钟）。
-显式说时长会覆盖默认值（例：「专注 45 分钟」）。超过 5 的数字才会被识别为时长。
-
----
-
-## 它到底做了什么
-
-四个专职模块，由一个状态机按顺序调度（平台当前没有 shell 真正运行多 Agent，
-`model.complete` 在 card-host 返回 no service，所以不是四个独立 AI 进程）：
-
-| 模块 | 性质 | 输入 → 输出 |
-|---|---|---|
-| 感知 perceive | 纯代码，不调 AI | 原话 + 时间 + 历史 → 情境包（四类关键词） |
-| 决策 decide | 唯一调 AI 的口子（默认关闭） | 情境包 → 意图标签（情境/情绪/时长/置信度/理由） |
-| 编排 orchestrate | 纯代码，本地映射表 | 意图标签 → 三段任务卡 + 每段理由 + 选曲 |
-| 守护 guardian | 纯本地，贯穿全程 | 异常信号 → 兜底动作 + 界面文案 |
-
-**两条闭环**：
-
-- 模糊回环：只追问一次；时间取系统值，天气默认室内，状态默认中性，都不主动问
-- 偏好回流：跳过/收藏写入本地偏好 → 下次选曲时加权（收藏 +1.0/次，跳过 -1.5/次，
-  同一首跳过 2 次进黑名单）
-
----
-
-## 能力边界（请先读这一段）
-
-- **不播放音频。** 进度条是本地按三段时长**模拟推进**的，卡片底部固定标注这一点。
-- **不接入版权曲库。** 曲库是编译期常量，内置 24 个**真实歌曲名**仅用于演示任务卡结构，
-  不存储、不传输任何音频内容。
-- **完全本地。** 只申请 `storage` 能力，不申请网络权限，不接第三方服务。
-- **不登录。** 登录归宿主。
-
----
-
-## 隐私政策
-
-**本应用不收集、上传或共享任何用户数据。**
-
-所有偏好设置（包括收藏记录、跳过记录、播放历史）仅保存在设备本地的应用私有空间内，
-不存在任何形式的网络传输。
-
-本应用未申请网络权限，不接入任何第三方服务，不含第三方统计与广告 SDK。
-
-用户可通过卸载应用彻底删除全部本地数据。
-
----
-
-## 数据存储
-
-| 文件 | 路径 | 内容 |
-|---|---|---|
-| 偏好 | `accounts/device/preference.json` | 收藏（含时间戳）、跳过、播放历史 |
-| 待续播 | `accounts/device/pending.json` | 播放中进度快照，播完即删 |
-| 事件日志 | `accounts/device/events.jsonl` | skip / fav / finish / quit 逐行追加 |
-
-`preference.json` 结构（v2）：
-
-```json
-{
-  "version": 2,
-  "tags": {
-    "scenes": ["focus", "commute"],
-    "favTracks": [{ "ref": "f-r1", "ts": 1696400000 }],
-    "skippedTracks": []
-  },
-  "history": [{ "ts": 1696400000, "scene": "focus", "durationMin": 90, "cardId": "c1696400000" }]
-}
+```
+晚上想专注
+早上通勤 45 分钟
+睡前听点安静的
+健身
 ```
 
-容量上限：收藏 200、跳过 200、历史 50。超量在启动时自动裁剪（保留最新的）。
+流程：
 
-v1 格式（`favTracks` 为字符串数组）会在启动时自动迁移为 v2，行为幂等。
+1. 说一句话，或直接点选场景（专注／通勤／睡前／健身）
+2. 场景没识别出来时会问一次「现在在做什么」——只问一次，不连环追问
+3. 确认卡片：场景、时长、三段结构与每段理由都摊开显示，点「开始播放」
+4. 播放中可以收藏或跳过，每次都会立刻换一首同风格的
+5. 需要调整就改时长、切番茄档位或「换一批」
+6. 随时「结束」，下次打开提示续播；输入页可进「我的音乐」「卡堆」「统计」
 
----
+## 目录结构
 
-## 测试
-
-```bash
-export OCTO_HUB=... OCTO_CARD_HOST=... OCTOSENSE_APP_HUB=...
-cd apps
-python test_all.py        # 115 条断言，约 70 秒
+```
+music-cue/
+├── bundle/                  # 提交给 App Hub 的应用包
+│   ├── main.splash          # 全部应用逻辑（状态机 + 四个模块 + 界面）
+│   ├── manifest.json        # id / 版本 / 能力声明
+│   ├── listing.json         # 上架信息（名称、简介、截图、许可）
+│   ├── assets/icon.svg
+│   └── screenshots/         # README 与上架用的真实渲染截图
+├── dev.bat                  # Windows 一键：doctor / run / shot / check / quit
+├── open.sh                  # 打开可见窗口（1280x800，独立演示数据目录）
+├── AGENTS.md  CLAUDE.md  GEMINI.md
+└── .local-state/            # 本地运行产物，已被 Git 忽略
 ```
 
-单阶段：
+测试脚本（`test_all.py`、`test_stage*.py` 等）位于上层 `apps/` 目录，未纳入本仓库。
+运行一次约 115 条断言、70 秒，全部基于真实运行：读 `/snap` 断言界面文本与 `preference.json`
+实际内容，并检查运行日志中无 `[E]` 错误。
 
-```bash
-python test_stage0.py     # 基线确认
-python test_stage1.py     # 中文可用性 + 界面中文化
-python test_stage2.py     # 演示观感（曲名 / 进度条 / 免责标注）
-python test_stage3.py     # 偏好数据 v2（结构 / 权重 / 迁移 / 脏数据 / 裁剪）
-python test_stage4.py     # 我的音乐（列表 / 排序 / 失效 ref / 渲染上限）
-python shots.py           # 重新截商店图
-```
+## 技术栈
 
-测试全部基于真实运行：通过 `/snap` 读组件树、`/click` 驱动交互、断言界面文本与
-`preference.json` 的实际内容，并检查运行日志中无 `[E]` 错误。
+- **OctoScript / Splash** — 应用实现语言，单文件 `main.splash`
+- **OctoSense App Hub** — 宿主运行时（`hub` 打包校验、`card-host` 运行与远程桥接）
+- **Makepad** — 底层 UI 渲染
+- **Rust** — 构建宿主工具
+- **Python 3** — `tools/octo` 工具链与测试脚本
+- **应用私有 fs** — 唯一申请的能力 `storage`，配额 16 MiB
 
----
+## 许可证
 
-## 已知限制
-
-| 限制 | 说明 |
-|---|---|
-| 单次会话时长 | 极长会话（如 4 小时以上）会逼近 20M 指令预算（20M/会话）。计时器间隔 5 秒是为规避这一点；如需支持更长会话，需再降频 |
-| 「4 小时」解析不出来 | 时长提取只取第一个数字且要求 ≥ 5，「4 小时」会回落到默认 90 分钟；「240 分钟」可用 |
-| 曲名 | 24 首真实歌名硬编码在 `main.splash` 的 `DEMO` 常量里；改曲库只需改 `title`，`ref` 不要动（打分与黑名单依赖它） |
-| 场景粒度 | 初赛只做 focus / commute 两场景 |
-| 视觉风格 | 目前单一配色。三套风格（暗色沉浸 / 浅色温柔 / 编辑部排版）留待后续 |
-
----
-
-## 发布者
-
-纯爱云烟口香糖三人音乐公司
+Apache-2.0（在 `bundle/listing.json` 中声明；仓库暂未附带独立的 LICENSE 文件）。
