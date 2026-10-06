@@ -1422,32 +1422,39 @@ let BtnTiny = ButtonFlat{height: 38
 // 结构说明：on_render 不能挂在根控件上 —— 实测挂在根上整个闭包不产出任何子节点
 // （快照里只剩一个全屏空 View）。必须与旧版同构：根为普通 SolidView，
 // 其内再绑定 `screen := ScrollYView{ on_render: || ... }`。
-SolidView{width: Fill height: Fill draw_bg.color: cAmb0
+//
+// 滚动修复（实测）：原先「根 → ScrollYView → 行 → 内容列 → 内容」整条链都是
+// height: Fill，内容高度恒等于视口高度，ScrollYView 的滚动区间被压成 0 ——
+// 表现就是滚轮和拖拽都毫无反应，超出视口的部分也干脆不绘制（快照里所有组件
+// 的最大底边恒为 800）。现在把背景层（左右氛围渐变 + 纸色列）留在 ScrollYView
+// 外面、固定满高，只让内容进 ScrollYView 并用 height: Fit：内容多高就滚多远，
+// 同时短页面依然有满屏纸色底，不会露馅。
+SolidView{width: Fill height: Fill flow: Right draw_bg.color: cAmb0
 
-screen := ScrollYView{width: Fill height: Fill flow: Down on_render: || {
+    // ── L0 左氛围（背景层，固定满高，不参与滚动）──
+    View{width: Fill height: Fill flow: Down
+        SolidView{width: Fill height: Fill draw_bg.color: cAmb0}
+        SolidView{width: Fill height: Fill draw_bg.color: cAmb1}
+        SolidView{width: Fill height: Fill draw_bg.color: cAmb2}
+        SolidView{width: Fill height: Fill draw_bg.color: cAmb3}
+        SolidView{width: Fill height: Fill draw_bg.color: cAmb4}
+        SolidView{width: Fill height: Fill draw_bg.color: cAmb5}
+        SolidView{width: Fill height: Fill draw_bg.color: cAmb6}
+        SolidView{width: Fill height: Fill draw_bg.color: cAmb7}
+    }
 
-    SolidView{width: Fill height: Fill flow: Right draw_bg.color: cAmb0
+    // ── L1 内容列：纸色底固定满高，内容在内部滚动 ──
+    SolidView{width: COL_W height: Fill flow: Down draw_bg.color: cPaper
 
-        // ── L0 左氛围 ──
-        View{width: Fill height: Fill flow: Down
-            SolidView{width: Fill height: Fill draw_bg.color: cAmb0}
-            SolidView{width: Fill height: Fill draw_bg.color: cAmb1}
-            SolidView{width: Fill height: Fill draw_bg.color: cAmb2}
-            SolidView{width: Fill height: Fill draw_bg.color: cAmb3}
-            SolidView{width: Fill height: Fill draw_bg.color: cAmb4}
-            SolidView{width: Fill height: Fill draw_bg.color: cAmb5}
-            SolidView{width: Fill height: Fill draw_bg.color: cAmb6}
-            SolidView{width: Fill height: Fill draw_bg.color: cAmb7}
-        }
-
-        // ── L1 内容列 ──
-        SolidView{width: COL_W height: Fill flow: Down draw_bg.color: cPaper
+        screen := ScrollYView{width: Fill height: Fill flow: Down on_render: || {
 
             // 注意：这里不能加 margin 做转场位移 ——
-            // 给 ScrollYView 的 Fill 子节点加 margin 会破坏其内容高度计算，
+            // 给 ScrollYView 的子节点加 margin 会破坏其内容高度计算，
             // 实测后果是「内容超过约 270px 的部分整体不绘制」（按钮全消失）。
             // 转场改为只驱动一个不参与布局的进度变量（见 playTransition）。
-            View{width: Fill height: Fill flow: Down padding: PAD spacing: 10
+            // 同理，height 必须是 Fit：写成 Fill 就等于把内容压回视口高度，
+            // 滚动区间再次归零（这就是之前滚不动的原因）。
+            View{width: Fill height: Fit flow: Down padding: PAD spacing: 10
 
                 // ══ 开发导航（devMode 关闭时不渲染）══
                 View{width: Fill height: Fit flow: Down spacing: 6
@@ -2060,13 +2067,12 @@ screen := ScrollYView{width: Fill height: Fill flow: Down on_render: || {
                     }
                 }
 
-                View{width: Fill height: Fill}
-
             }
-        }
+        }}
+    }
 
-        // ── L0 右氛围 ──
-        View{width: Fill height: Fill flow: Down
+    // ── L0 右氛围（背景层，固定满高，不参与滚动）──
+    View{width: Fill height: Fill flow: Down
             SolidView{width: Fill height: Fill draw_bg.color: cAmb0}
             SolidView{width: Fill height: Fill draw_bg.color: cAmb1}
             SolidView{width: Fill height: Fill draw_bg.color: cAmb2}
@@ -2077,5 +2083,4 @@ screen := ScrollYView{width: Fill height: Fill flow: Down on_render: || {
             SolidView{width: Fill height: Fill draw_bg.color: cAmb7}
         }
     }
-}}
 }
