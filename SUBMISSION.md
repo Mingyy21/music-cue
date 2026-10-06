@@ -13,7 +13,6 @@
 - Bundle BLAKE3: `e7c7f5f2f5c005505bb8f824b28b55917c41bc0bee23044d652689d7ea48d22d`
 
 补充：bundle 共 8 个文件、294 KB（闸门上限 8 MB）；发布者名称为「纯爱云烟口香糖三人音乐公司」。
-本文件由代理起草，issue 由发布者本人开 —— 见文末第 5 节。
 
 ## 2. `hub check` 完整输出
 
@@ -105,19 +104,3 @@ manifest 只申请 `storage`，`network.hosts` 为空，`grants` 行回读即为
 - 真实的 OctoSense 桌面外壳 / 真机设备：没有在 shell 里跑过，也没有在手机上跑过
 - 真实音频播放：曲目与进度都是本地模拟，不接入版权曲库
 - 签名流程：首次提交未签名，publisher 密钥尚未生成
-
-## 5. 开 issue 的命令
-
-代理不代开，由发布者本人执行。不需要 `cd`，在任意盘符、任意目录下都能跑：
-
-```sh
-gh issue create --repo OctoSense-org/OctoSense-App-Hub \
-  --title "Submit music.cue 0.2.0" \
-  --body-file "E:/software2/apps/music-cue/SUBMISSION.md"
-```
-
-Windows CMD 里若仍要先进目录，记得切盘符（`cd` 本身不切盘）：
-
-```bat
-cd /d E:\software2\apps\music-cue
-```
