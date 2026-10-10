@@ -1667,6 +1667,9 @@ SolidView{width: Fill height: Fill flow: Right draw_bg.color: cAmb0
                                     Label{width: Fit text: trackTitle(seg.src)
                                           draw_text.color: cInk2
                                           draw_text.text_style.font_size: 11}
+                                    Label{width: Fit text: "演示曲目"
+                                          draw_text.color: cInk3
+                                          draw_text.text_style.font_size: 10}
                                 }
                             }
 
@@ -1773,6 +1776,9 @@ SolidView{width: Fill height: Fill flow: Right draw_bg.color: cAmb0
                                     Label{width: Fill text: trackTitle(currentSeg().src)
                                           draw_text.color: cAmbInk
                                           draw_text.text_style.font_size: 18}
+                                    Label{width: Fit text: "演示曲目"
+                                          draw_text.color: cAmbInk2
+                                          draw_text.text_style.font_size: 10}
                                     if favMark == currentSeg().src {
                                         Label{width: Fit text: "已收藏"
                                               draw_text.color: cAmberSoft
@@ -1930,6 +1936,9 @@ SolidView{width: Fill height: Fill flow: Right draw_bg.color: cAmb0
                                               text: sceneLabelOf(trackScene(favAt(k).ref)) + " · " + relTime(favAt(k).ts)
                                               draw_text.color: cInk2
                                               draw_text.text_style.font_size: 11}
+                                        Label{width: Fill text: "演示曲目"
+                                              draw_text.color: cInk3
+                                              draw_text.text_style.font_size: 10}
                                     }
                                     BtnTiny{width: 56 text: "移除"
                                         on_click: || removeFavAt(k)}
